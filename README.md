@@ -1,4 +1,4 @@
-# Cellular_AWS
+# Cellular AWS
 
 ESP-IDF project for cellular automated weather stations.
 
