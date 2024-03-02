@@ -36,84 +36,111 @@
 	/* Define variables, which go into .bss section (zero-initialized data) */
 	.bss
 
-	  /* Next input signal edge expected: 0 (negative) or 1 (positive) */
-  .global pulse_edge
-pulse_edge:
-  .long 0
+	.global pulse_edge_rain
+pulse_edge_rain:
+  	.long 0
+
+	.global pulse_edge_wind
+pulse_edge_wind:
+  	.long 0
 
 	/* Next input signal edge expected: 0 (negative) or 1 (positive) */
-	.global next_edge
-next_edge:
+	.global next_edge_rain
+next_edge_rain:
+	.long 0
+
+	.global next_edge_wind
+next_edge_wind:
 	.long 0
 
 	/* Counter started when signal value changes.
 	   Edge is "debounced" when the counter reaches zero. */
-	.global debounce_counter
-debounce_counter:
+	.global debounce_counter_rain
+debounce_counter_rain:
+	.long 0
+
+	.global debounce_counter_wind
+debounce_counter_wind:
 	.long 0
 
 	/* Value to which debounce_counter gets reset.
 	   Set by the main program. */
-	.global debounce_max_count
-debounce_max_count:
+	.global debounce_max_count_rain
+debounce_max_count_rain:
 	.long 0
 
-	  /* Reset value for pulse length recognition */
-  .global pulse_res
-pulse_res:
-  .long 0
+	.global debounce_max_count_wind
+debounce_max_count_wind:
+	.long 0
+	
+	/* Reset value for pulse length recognition */
+	.global pulse_res_rain
+pulse_res_rain:
+	.long 0
 
-    /* Current pulse length count */
-  .global pulse_cur
-pulse_cur:
-  .long 0
+	.global pulse_res_wind
+pulse_res_wind:
+	.long 0
 
-  /* Latest pulse length count */
-  .global pulse_last
-pulse_last:
-  .long 0
+	/* Current pulse length count, or microseconds since last pulse */
+  	.global pulse_cur_rain
+pulse_cur_rain:
+  	.long 0
 
-    /* Shortest pulse length count */
-  .global pulse_min
-pulse_min:
-  .long 0
+	.global pulse_cur_wind
+pulse_cur_wind:
+  	.long 0
+
+	/* Latest complete pulse length count */
+	.global pulse_last_rain
+pulse_last_rain:
+	.long 0
+
+	.global pulse_last_wind
+pulse_last_wind:
+	.long 0
+
+	/* Shortest pulse length count */
+	.global pulse_min_rain
+pulse_min_rain:
+	.long 0
+
+	.global pulse_min_wind
+pulse_min_wind:
+	.long 0
 
 	/* Total number of signal edges acquired */
-	.global edge_count
-edge_count:
+	.global edge_count_rain
+edge_count_rain:
 	.long 0
 
-	/* Number of edges to acquire before waking up the SoC.
-	   Set by the main program. */
-	.global edge_count_to_wake_up
-edge_count_to_wake_up:
+	.global edge_count_wind
+edge_count_wind:
 	.long 0
 
-	/* RTC IO number used to sample the input signal.
+	/* RTC IO number used to sample the rain input signal.
 	   Set by main program. */
-	.global io_number
-io_number:
+	.global io_number_rain
+io_number_rain:
+	.long 0
+
+	/* RTC IO number used to sample the wind input signal.
+	   Set by main program. */
+	.global io_number_wind
+io_number_wind:
 	.long 0
 
 	/* Code goes into .text section */
 	.text
 	.global entry
 entry:
-jump pulse_tick
+	jump pulse_tick
 
-  .global read_now
+	.global read_now
 read_now:
 	/* Load io_number */
-	move r3, io_number
+	move r3, io_number_rain
 	ld r3, r3, 0
-
-#if CONFIG_IDF_TARGET_ESP32S2
-    /* ESP32S2 powers down RTC periph when entering deep sleep and thus by association SENS_SAR_IO_MUX_CONF_REG */
-	WRITE_RTC_FIELD(SENS_SAR_IO_MUX_CONF_REG, SENS_IOMUX_CLK_GATE_EN, 1)
-#elif CONFIG_IDF_TARGET_ESP32S3
-    /* ESP32S3 powers down RTC periph when entering deep sleep and thus by association SENS_SAR_PERI_CLK_GATE_CONF_REG */
-    WRITE_RTC_FIELD(SENS_SAR_PERI_CLK_GATE_CONF_REG, SENS_IOMUX_CLK_EN, 1);
-#endif
 
 	/* Lower 16 IOs and higher need to be handled separately,
 	 * because r0-r3 registers are 16 bit wide.
@@ -136,25 +163,26 @@ read_io_high:
 read_done:
 	and r0, r0, 1
 	/* State of input changed? */
-	move r3, next_edge
+	move r3, next_edge_rain
 	ld r3, r3, 0
 	add r3, r0, r3
 	and r3, r3, 1
 	jump changed, eq
 	/* Not changed */
 	/* Reset debounce_counter to debounce_max_count */
-	move r3, debounce_max_count
-	move r2, debounce_counter
+	move r3, debounce_max_count_rain
+	move r2, debounce_counter_rain
 	ld r3, r3, 0
 	st r3, r2, 0
 	/* End program */
-	halt
+	//halt
+	jump entry_wind
 
 	.global changed
 changed:
 	/* Input state changed */
 	/* Has debounce_counter reached zero? */
-	move r3, debounce_counter
+	move r3, debounce_counter_rain
 	ld r2, r3, 0
 	add r2, r2, 0 /* dummy ADD to use "jump if ALU result is zero" */
 	jump edge_detected, eq
@@ -162,88 +190,215 @@ changed:
 	sub r2, r2, 1
 	st r2, r3, 0
 	/* End program */
-	halt
+	//halt
+	jump entry_wind
 
 	.global edge_detected
 edge_detected:
 	/* Reset debounce_counter to debounce_max_count */
-	move r3, debounce_max_count
-	move r2, debounce_counter
+	move r3, debounce_max_count_rain
+	move r2, debounce_counter_rain
 	ld r3, r3, 0
 	st r3, r2, 0
 	/* Flip next_edge */
-	move r3, next_edge
+	move r3, next_edge_rain
 	ld r2, r3, 0
 	add r2, r2, 1
 	and r2, r2, 1
 	st r2, r3, 0
 	/* Increment edge_count */
-	move r3, edge_count
+	move r3, edge_count_rain
 	ld r2, r3, 0
 	add r2, r2, 1
 	st r2, r3, 0
+	/* Full pulse detected? */
+	move r3, pulse_edge_rain
+	ld r3, r3, 0
+	add r3, r0, r3
+	and r3, r3, 1
+	jump pulse_detected, eq
 
-	  /* Full pulse detected? */
-  move r3, pulse_edge
-  ld r3, r3, 0
-  add r3, r0, r3
-  and r3, r3, 1
-  jump pulse_detected, eq
-
-	/* Compare edge_count to edge_count_to_wake_up */
-	//move r3, edge_count_to_wake_up
-	//ld r3, r3, 0
-	//sub r3, r3, r2
-	//jump wake_up, eq
-	/* Not yet. End program */
-	halt
+	//halt
+	jump entry_wind
 
 	 .global pulse_tick
 pulse_tick:
-  /* Increment pulse_cur */
-  move r3, pulse_cur
-  ld r2, r3, 0
-  add r2, r2, 1
-  st r2, r3, 0
-  jump read_now
+	/* Increment pulse_cur */
+	move r3, pulse_cur_rain
+	ld r2, r3, 0
+	add r2, r2, 1
+	st r2, r3, 0
+	jump read_now
 
-  .global pulse_detected
+  	.global pulse_detected
 pulse_detected:
+	/* Set pulse_last to pulse_cur */
+	move r1, pulse_cur_rain
+	move r0, pulse_last_rain
+	ld r1, r1, 0
+	st r1, r0, 0
+	/* Jump to pulse_lower when pulse_cur is lower than pulse_min */
+	move r3, pulse_min_rain
+	move r2, pulse_cur_rain
+	ld r3, r3, 0
+	ld r2, r2, 0
+	sub r3, r2, r3
+	jump pulse_lower, ov
+	/* Jump to pulse_lower when pulse_min is zero */
+	move r3, pulse_min_rain
+	ld r2, r3, 0
+	add r2, r2, 0
+	jump pulse_lower, eq
+	jump pulse_reset
 
-  /* Set pulse_last to pulse_cur */
-  move r1, pulse_cur
-  move r0, pulse_last
-  ld r1, r1, 0
-  st r1, r0, 0
-
-  /* Jump to pulse_lower when pulse_cur is lower than pulse_min */
-  move r3, pulse_min
-  move r2, pulse_cur
-  ld r3, r3, 0
-  ld r2, r2, 0
-  sub r3, r2, r3
-  jump pulse_lower, ov
-  /* Jump to pulse_lower when pulse_min is zero */
-  move r3, pulse_min
-  ld r2, r3, 0
-  add r2, r2, 0
-  jump pulse_lower, eq
-  jump pulse_reset
-
-  .global pulse_lower
+	.global pulse_lower
 pulse_lower:
-  /* Set pulse_min to pulse_cur */
-  move r3, pulse_cur
-  move r2, pulse_min
-  ld r3, r3, 0
-  st r3, r2, 0
-  jump pulse_reset
+	/* Set pulse_min to pulse_cur */
+	move r3, pulse_cur_rain
+	move r2, pulse_min_rain
+	ld r3, r3, 0
+	st r3, r2, 0
+	jump pulse_reset
 
-  .global pulse_reset
+	.global pulse_reset
 pulse_reset:
-  /* Reset pulse_cur to zero */
-  move r3, pulse_res
-  move r2, pulse_cur
-  ld r3, r3, 0
-  st r3, r2, 0
-  halt
+	/* Reset pulse_cur to zero */
+	move r3, pulse_res_rain
+	move r2, pulse_cur_rain
+	ld r3, r3, 0
+	st r3, r2, 0
+	//halt
+	jump entry_wind
+
+//////
+//Begin Wind Section//
+/////
+
+	.global entry_wind
+entry_wind:
+	jump pulse_tick_wind
+
+	.global read_now_wind
+read_now_wind:
+	/* Load io_number */
+	move r3, io_number_wind
+	ld r3, r3, 0
+
+	/* Lower 16 IOs and higher need to be handled separately,
+	 * because r0-r3 registers are 16 bit wide.
+	 * Check which IO this is.
+	 */
+	move r0, r3
+	jumpr read_io_high, 16, ge
+
+	/* Read the value of lower 16 RTC IOs into R0 */
+	READ_RTC_REG(RTC_GPIO_IN_REG, RTC_GPIO_IN_NEXT_S, 16)
+	rsh r0, r0, r3
+	jump read_done_wind
+
+read_done_wind:
+	and r0, r0, 1
+	/* State of input changed? */
+	move r3, next_edge_wind
+	ld r3, r3, 0
+	add r3, r0, r3
+	and r3, r3, 1
+	jump changed_wind, eq
+	/* Not changed */
+	/* Reset debounce_counter to debounce_max_count */
+	move r3, debounce_max_count_wind
+	move r2, debounce_counter_wind
+	ld r3, r3, 0
+	st r3, r2, 0
+	/* End program */
+	halt
+
+	.global changed_wind
+changed_wind:
+	/* Input state changed */
+	/* Has debounce_counter reached zero? */
+	move r3, debounce_counter_wind
+	ld r2, r3, 0
+	add r2, r2, 0 /* dummy ADD to use "jump if ALU result is zero" */
+	jump edge_detected_wind, eq
+	/* Not yet. Decrement debounce_counter */
+	sub r2, r2, 1
+	st r2, r3, 0
+	/* End program */
+	halt
+
+	.global edge_detected_wind
+edge_detected_wind:
+	/* Reset debounce_counter to debounce_max_count */
+	move r3, debounce_max_count_wind
+	move r2, debounce_counter_wind
+	ld r3, r3, 0
+	st r3, r2, 0
+	/* Flip next_edge */
+	move r3, next_edge_wind
+	ld r2, r3, 0
+	add r2, r2, 1
+	and r2, r2, 1
+	st r2, r3, 0
+	/* Increment edge_count */
+	move r3, edge_count_wind
+	ld r2, r3, 0
+	add r2, r2, 1
+	st r2, r3, 0
+	/* Full pulse detected? */
+	move r3, pulse_edge_wind
+	ld r3, r3, 0
+	add r3, r0, r3
+	and r3, r3, 1
+	jump pulse_detected_wind, eq
+
+	halt
+
+	 .global pulse_tick_wind
+pulse_tick_wind:
+	/* Increment pulse_cur */
+	move r3, pulse_cur_wind
+	ld r2, r3, 0
+	add r2, r2, 1
+	st r2, r3, 0
+	jump read_now_wind
+
+  	.global pulse_detected_wind
+pulse_detected_wind:
+	/* Set pulse_last to pulse_cur */
+	move r1, pulse_cur_wind
+	move r0, pulse_last_wind
+	ld r1, r1, 0
+	st r1, r0, 0
+
+	/* Jump to pulse_lower when pulse_cur is lower than pulse_min */
+	move r3, pulse_min_wind
+	move r2, pulse_cur_wind
+	ld r3, r3, 0
+	ld r2, r2, 0
+	sub r3, r2, r3
+	jump pulse_lower_wind, ov
+	/* Jump to pulse_lower when pulse_min is zero */
+	move r3, pulse_min_wind
+	ld r2, r3, 0
+	add r2, r2, 0
+	jump pulse_lower_wind, eq
+	jump pulse_reset_wind
+
+	.global pulse_lower_wind
+pulse_lower_wind:
+	/* Set pulse_min to pulse_cur */
+	move r3, pulse_cur_wind
+	move r2, pulse_min_wind
+	ld r3, r3, 0
+	st r3, r2, 0
+	jump pulse_reset_wind
+
+	.global pulse_reset_wind
+pulse_reset_wind:
+	/* Reset pulse_cur to zero */
+	move r3, pulse_res_wind
+	move r2, pulse_cur_wind
+	ld r3, r3, 0
+	st r3, r2, 0
+	halt
