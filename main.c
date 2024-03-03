@@ -33,7 +33,7 @@
 
 #define TRANSMIT_DATA true
 #define PROTOCOL 1 //0 = MQTT, 1 = UDP
-#define STORE_SD false
+#define STORE_SD true
 
 #if TRANSMIT_DATA
     #include "driver/uart.h" //UART
@@ -48,9 +48,9 @@
     #define PIN_NUM_CS 13
 #endif
 
-#define AVERAGING false
+#define AVERAGING true
 #define MEASURE_PRESSURE false
-#define MEASURE_WIND true
+#define MEASURE_WIND false
 
 #if MEASURE_PRESSURE
     #include "bmx280.h" //BMP280 pressure sensor
@@ -105,8 +105,6 @@
 //ULP functions
 extern const uint8_t ulp_main_bin_start[] asm("_binary_ulp_main_bin_start");
 extern const uint8_t ulp_main_bin_end[]   asm("_binary_ulp_main_bin_end");
-
-uint16_t ulp_wakeup_period_us = 1000; //Wakeup period of 1 ms
 
 #if MODEM == 0
     RTC_DATA_ATTR int lastFormatHour = 24;
@@ -168,6 +166,9 @@ RTC_DATA_ATTR uint32_t boot_count;
     
     float windDirection = -9999; //2-minute average wind direction
     RTC_DATA_ATTR float windDirectioni[] = {-9999, -9999, -9999, -9999, -9999, -9999, -9999, -9999, -9999, -9999, -9999, -9999, -9999, -9999}; //2 minutes of instantaneous values
+    uint16_t ulp_wakeup_period_us = 1000; //Wakeup period of 1 ms
+#else
+    uint16_t ulp_wakeup_period_us = 10000; //Wakeup period of 10 ms
 #endif
 
 float vbat;
@@ -767,11 +768,11 @@ static void measureRain(){
         /* Reset shortest edge */
         ulp_pulse_min_rain = 0;
 
-        xEventGroupSetBits(event_group, PRECIP_BIT);
-
         ESP_LOGI(TAG, "Precip Accum: %.2f", precip);
         ESP_LOGI(TAG, "Max rain rate: %.2f", maxPrecipRate);
         ESP_LOGI(TAG, "Current rain rate: %.2f", precipRate);
+
+        xEventGroupSetBits(event_group, PRECIP_BIT);
 
         vTaskDelay(1000 * MEASURE_INTERVAL_SEC / portTICK_PERIOD_MS);   
     }
@@ -1354,7 +1355,7 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
         xEventGroupClearBits(event_group, PROCEED_BIT); //Clear AT response signal
 
         uart_init(); //Initialize UART
-        xTaskCreate(rx_task, "uart_rx_task", RX_BUF_SIZE * 2, NULL, configMAX_PRIORITIES, NULL); //Start AT response receiver task
+        xTaskCreate(rx_task, "uart_rx_task", RX_BUF_SIZE * 2, NULL, configMAX_PRIORITIES - 1, NULL); //Start AT response receiver task
         #if MODEM == 0
             callbackString = "$M138 BOOT,RUNNING*2a"; //Set modem ready signal
         #elif MODEM == 1
@@ -1407,7 +1408,7 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
         xEventGroupClearBits(event_group, PROCEED_BIT); //Clear AT response signal
 
         uart_init(); //Initialize UART
-        xTaskCreate(rx_task, "uart_rx_task", RX_BUF_SIZE * 2, NULL, configMAX_PRIORITIES, NULL); //Start AT response receiver task
+        xTaskCreate(rx_task, "uart_rx_task", RX_BUF_SIZE * 2, NULL, configMAX_PRIORITIES - 1, NULL); //Start AT response receiver task
         #if MODEM == 0
             callbackString = "$M138 BOOT,RUNNING*2a"; //Set modem ready signal
         #elif MODEM == 1
@@ -1516,7 +1517,7 @@ void app_main(void){
 
     i2c_master_init(); //Initialize I2C
 
-    xTaskCreate(measureTemp, "measureTemp", 1024*2, NULL, configMAX_PRIORITIES, NULL); //Start temp measuring task
+    xTaskCreate(measureTemp, "measureTemp", 1024*2, NULL, configMAX_PRIORITIES - 1, NULL); //Start temp measuring task
     xEventGroupWaitBits(event_group, MEASURE_BIT, pdTRUE, pdTRUE, 500 / portTICK_PERIOD_MS); //Wait for at least one temp measurement
     //measurePressure();
 
@@ -1538,12 +1539,12 @@ void app_main(void){
 
     if(rainGauge){
         printf("Rain gauge connected\n");
-        xTaskCreate(measureRain, "measureRain", 1024*2, NULL, configMAX_PRIORITIES, NULL); //Start rain measuring task
+        xTaskCreate(measureRain, "measureRain", 1024*2, NULL, configMAX_PRIORITIES - 1, NULL); //Start rain measuring task
         xEventGroupWaitBits(event_group, PRECIP_BIT, pdTRUE, pdTRUE, 500 / portTICK_PERIOD_MS); //Wait for at least one precip measurement
     }
 
     #if MEASURE_WIND
-        xTaskCreate(measureWind, "measureWind", 1024*2, NULL, configMAX_PRIORITIES, NULL); //Start wind speed measuring task
+        xTaskCreate(measureWind, "measureWind", 1024*2, NULL, configMAX_PRIORITIES - 1, NULL); //Start wind speed measuring task
         xEventGroupWaitBits(event_group, WIND_BIT, pdTRUE, pdTRUE, 500 / portTICK_PERIOD_MS); //Wait for at least one wind measurement
     #endif
 
