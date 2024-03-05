@@ -497,8 +497,7 @@ static esp_err_t i2c_master_init(void){
             }
 
             // Read a line from file
-            char line[128];
-            //fgets(line, sizeof(line), f);
+            char line[256];
 
             while (fgets(line, sizeof(line), f)) {
                 char *pos = strchr(line, '\n');
@@ -1585,7 +1584,7 @@ void app_main(void){
             #endif
         }
         lastFormatMin = currentMin;
-        if (currentHour == 23 && currentMin == 59 && currentSec >= (59 - MEASURE_INTERVAL_SEC)){
+        if (currentMin % STORE_INTERVAL_MIN != 0){
             precip = 0;
         }
     }
