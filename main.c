@@ -28,8 +28,8 @@
 #include <sys/stat.h>
 
 #define MEASURE_INTERVAL_SEC 10
-#define STORE_INTERVAL_MIN 15
-#define TRANSMIT_INTERVAL_MIN 15
+#define STORE_INTERVAL_MIN 2
+#define TRANSMIT_INTERVAL_MIN 2
 
 #define TRANSMIT_DATA true
 #define PROTOCOL 1 //0 = MQTT, 1 = UDP
@@ -49,6 +49,7 @@
 #endif
 
 #define AVERAGING true
+#define MEASURE_TEMP true
 #define MEASURE_PRESSURE false
 #define MEASURE_WIND false
 
@@ -65,24 +66,25 @@
 
 //Pin definitions
 #define RAIN_PIN GPIO_NUM_39
-#define WIND_PIN GPIO_NUM_13
+#define WIND_PIN GPIO_NUM_12
 #define BAT_ADC_UNIT ADC_UNIT_1
 #define BAT_ADC ADC_CHANNEL_7
 
-#define MODEM 2 //MODEM 0 = M138, MODEM 1 = SIM7600, MODEM 2 = SIM7070
-#define MODEM_SLEEP 0 //0 = Power off, 1 = Modem sleep
+#define MODEM 0 //MODEM 0 = satellite, MODEM 1 = SIM7600, MODEM 2 = SIM7070
+#define MODEM_SLEEP 1 //0 = Power off, 1 = Modem sleep
 
-#define MODEM_PWRKEY_PIN GPIO_NUM_4
-
-#if MODEM == 0 //M138
+#if MODEM == 0
     #define TXD_PIN 17
     #define RXD_PIN 16
+    #define MODEM_DTR_PIN GPIO_NUM_4
 #elif MODEM == 1 //SIM7600
+    #define MODEM_PWRKEY_PIN GPIO_NUM_4
     #define TXD_PIN 27
     #define RXD_PIN 26
     #define MODEM_DTR_PIN GPIO_NUM_32
     #define FLIGHT_PIN GPIO_NUM_25
 #elif MODEM == 2 //SIM7070
+    #define MODEM_PWRKEY_PIN GPIO_NUM_4
     #define TXD_PIN 27
     #define RXD_PIN 26
     #define MODEM_DTR_PIN GPIO_NUM_32
@@ -90,11 +92,12 @@
 
 #if MODEM == 0
     #define UART_NUM UART_NUM_2
+    #define UART_BAUD 19200
 #else
     #define UART_NUM UART_NUM_1
+    #define UART_BAUD 115200
 #endif
 
-#define UART_BAUD 115200
 #define RX_BUF_SIZE 1024
 
 #define PROCEED_BIT BIT0
@@ -106,13 +109,14 @@
 extern const uint8_t ulp_main_bin_start[] asm("_binary_ulp_main_bin_start");
 extern const uint8_t ulp_main_bin_end[]   asm("_binary_ulp_main_bin_end");
 
-#if MODEM == 0
+#if MODEM == 3
     RTC_DATA_ATTR int lastFormatHour = 24;
 #else
     RTC_DATA_ATTR int lastFormatMin = -1;
 #endif
 
 char *msg_buf;
+int msg_len_bytes;
 
 #if STORE_SD
     RTC_DATA_ATTR uint16_t messageQueue;
@@ -156,6 +160,7 @@ RTC_DATA_ATTR uint32_t boot_count;
 #endif
 
 #if MEASURE_WIND
+    #define SCALE_FACTOR 3
     float windSpeed = -9999; //2-minute average sustained wind
     RTC_DATA_ATTR int32_t windPulses[] = {-9999, -9999, -9999, -9999, -9999, -9999, -9999, -9999, -9999, -9999, -9999, -9999, -9999, -9999}; //2 minutes of instantaneous values
     RTC_DATA_ATTR float maxWindSpeed = -9999; //max 2-minute average since last transmission
@@ -324,7 +329,7 @@ static esp_err_t i2c_master_init(void){
         #if MODEM == 1
             sendAT("AT+NETOPEN\r", "OK", 5);
 
-            if(sendAT("AT+CIPOPEN=1,\"UDP\",,,5000\r", "+CIPOPEN: 1,0", 5);){
+            if(sendAT("AT+CIPOPEN=1,\"UDP\",,,5000\r", "+CIPOPEN: 1,0", 5)){
                 ESP_LOGI(TAG, "UDP connect successful");
                 return true;
             } else{
@@ -332,12 +337,15 @@ static esp_err_t i2c_master_init(void){
                 return false;
             }
         #else
-            sendAT("AT+CNACT=0,1\r", "+APP PDP: 0,ACTIVE", 5);
-
-            if(sendAT("AT+CAOPEN=1,0,\"UDP\",\"142.11.236.169\",5254,1\r", "+CAOPEN: 1,0", 5)){
-                ESP_LOGI(TAG, "UDP connnect successful");
+            if(sendAT("AT+CNACT=0,1\r", "+APP PDP: 0,ACTIVE", 10)){
+                if(sendAT("AT+CAOPEN=1,0,\"UDP\",\"142.11.236.169\",5254,1\r", "+CAOPEN: 1,0", 5)){
+                    ESP_LOGI(TAG, "UDP connnect successful");
                 return true;
-            } else{
+                } else{
+                    ESP_LOGE(TAG, "UDP connnect fail");
+                return false;
+                }
+            } else {
                 ESP_LOGE(TAG, "UDP connnect fail");
                 return false;
             }
@@ -354,7 +362,7 @@ static esp_err_t i2c_master_init(void){
             printf("Pub buf: %s\n", pub_buf);
 
             sendAT(pub_buf, ">", 5);
-            if(sendAT(msg_buf, "RECV FROM:142.11.236.169", 5)){
+            if(sendAT(msg_buf, "RECV FROM:142.11.236.169", 10)){
                 ESP_LOGI(TAG, "UDP publish successful");
                 return true;
             } else{
@@ -363,8 +371,9 @@ static esp_err_t i2c_master_init(void){
             }
         #else
             char pub_buf[32] =  "AT+CASEND=1,";
+            msg_len_bytes = strlen(msg_buf);
             char msg_len[32];
-            sprintf(msg_len, "%d", strlen(msg_buf));
+            sprintf(msg_len, "%d", msg_len_bytes);
             strncat(pub_buf, msg_len, strlen(msg_len));
             strncat(pub_buf, "\r", strlen("\r")+1);
             sendAT(pub_buf, ">", 5);
@@ -549,29 +558,33 @@ static esp_err_t i2c_master_init(void){
  */
 void setTime(char *s){
     //ESP_LOGE(TAG, "Time from modem: %s", s);
-    #if MODEM == 0 //$DT 20240216064445,I*53
-        char year[5];
-        strncpy(year, s + 4, 4); 
-        int yearint = atoi(year) - 1900; //years since 1900
+    #if MODEM == 0 //+CCLK:24/05/24,21:44:45
+        char year[3];
+        strncpy(year, s + 5, 2); 
+        int yearint = atoi(year) + 100; //years since 1900
+        ESP_LOGI(TAG, "Year: %d", yearint);
 
         char month[3];
         strncpy(month, s + 8, 2);  
         int monthint = atoi(month) - 1; //Jan = 0
+        ESP_LOGI(TAG, "Month: %d", monthint);
 
         char day[3];
-        strncpy(day, s + 10, 2);  
+        strncpy(day, s + 11, 3);  
         int dayint = atoi(day);
+        ESP_LOGI(TAG, "Day: %d", dayint);
 
         char hour[3];
-        strncpy(hour, s + 12, 2);  
+        strncpy(hour, s + 14, 2);  
         int hourint = atoi(hour);
+        ESP_LOGI(TAG, "Hour: %d", hourint);
 
         char min[3];
-        strncpy(min, s + 14, 2);  
+        strncpy(min, s + 17, 2);  
         int minint = atoi(min);
 
         char sec[3];
-        strncpy(sec, s + 16, 2);  
+        strncpy(sec, s + 20, 2);  
         int secint = atoi(sec);
     #else //CCLK: "+CCLK: "23/06/10,14:09:19-16"
         char year[3];
@@ -635,12 +648,13 @@ void setTime(char *s){
                 uint8_t i = 0;
                 while( token != NULL ){
                     i++;
-                    printf("%d:%s\n", i, token); //printing each token
+                    ESP_LOGI("Modem", "%d %s", i, token);
+                    //printf("%d:%s\n", i, token); //printing each token
 
                     char *s;
                     s = strstr(token, callbackString);
                     if (s != NULL){
-                        if(strcmp(callbackString, "CCLK:") == 0 || strcmp(callbackString, "$DT 20") == 0){
+                        if(strcmp(callbackString, "CCLK:") == 0){
                             setTime(s);
                         }
                         if(strcmp(callbackString, "AT+CGSN") != 0 && strcmp(callbackString, "+CAURC: \"recv\"") != 0){
@@ -653,14 +667,20 @@ void setTime(char *s){
                     }
                     if(strcmp(callbackString, "+CAURC: \"recv\"") == 0 && i == 3){
                         ESP_LOGI(TAG, "Length received by server: %s", token);
-                        ESP_LOGI(TAG, "Length sent: %d", strlen(msg_buf));
-                        if(strlen(msg_buf) == atoi(token)){
+                        ESP_LOGI(TAG, "Length sent: %d", msg_len_bytes);
+                        if(msg_len_bytes == atoi(token)){
                             xEventGroupSetBits(event_group, PROCEED_BIT);
                         }
                     }
                     /*s = strstr(token, "ERROR");
                     if (s != NULL){
                         xEventGroupSetBits(event_group, RESPONSE_BIT);
+                    }
+                    s = strstr(token, "NORMAL POWER DOWN");
+                    if (s != NULL && strcmp(callbackString, "PSUTTZ") == 0){
+                        ESP_LOGI(TAG, "Premature power down");
+                        vTaskDelay(5000 * MEASURE_INTERVAL_SEC / portTICK_PERIOD_MS);
+                        esp_restart();
                     }*/
                     token = strtok(NULL, "\n");
                 }
@@ -670,8 +690,7 @@ void setTime(char *s){
     }
 #endif
 
-static void init_ulp_program(void)
-{
+static void init_ulp_program(void) {
     esp_err_t err = ulp_load_binary(0, ulp_main_bin_start, (ulp_main_bin_end - ulp_main_bin_start) / sizeof(uint32_t));
     ESP_ERROR_CHECK(err);
 
@@ -734,7 +753,7 @@ static void init_ulp_program(void)
     ESP_ERROR_CHECK(err);
 }
 
-static void measureRain(){
+static void measureRain() {
     while(1){
         boot_count++;
 
@@ -777,118 +796,119 @@ static void measureRain(){
     }
 }
 
-/**
- * @brief Measures temperature, humidity, and dew point from a SHT3x sensor, calculates 5-minute average if configured, and compares to max/min values
- * 
- */
-void measureTemp(){
-    uint8_t readings = 300 / MEASURE_INTERVAL_SEC;
+#if MEASURE_TEMP
+    /**
+     * @brief Measures temperature, humidity, and dew point from a SHT3x sensor, calculates 5-minute average if configured, and compares to max/min values
+     * 
+     */
+    void measureTemp() {
+        uint8_t readings = 300 / MEASURE_INTERVAL_SEC;
 
-    uint8_t i = 0;
-    while(1){
-        i++;
-        printf("%d: Measuring temp\n", i);
+        uint8_t i = 0;
+        while(1){
+            i++;
+            printf("%d: Measuring temp\n", i);
 
-        cmd = i2c_cmd_link_create();
-        ESP_ERROR_CHECK(i2c_master_start(cmd));
-        ESP_ERROR_CHECK(i2c_master_write_byte(cmd, (0x44 << 1) | 0, true));
-        ESP_ERROR_CHECK(i2c_master_write_byte(cmd, 0x2400 >> 8, true));
-        ESP_ERROR_CHECK(i2c_master_write_byte(cmd, 0x2400 & 0xFF, true));
-        ESP_ERROR_CHECK(i2c_master_stop(cmd));
-        if(i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS) != ESP_OK){
-            tempi[readings+1] = -9999;
-            humidityi[readings+1] = -9999;
-            dewi[readings+1] = -9999;
-            xEventGroupSetBits(event_group, MEASURE_BIT);
-            ESP_LOGE(TAG, "Failed to initialize SHT35");
-            vTaskDelete(NULL);
-        };
-        i2c_cmd_link_delete(cmd);
+            cmd = i2c_cmd_link_create();
+            ESP_ERROR_CHECK(i2c_master_start(cmd));
+            ESP_ERROR_CHECK(i2c_master_write_byte(cmd, (0x44 << 1) | 0, true));
+            ESP_ERROR_CHECK(i2c_master_write_byte(cmd, 0x2400 >> 8, true));
+            ESP_ERROR_CHECK(i2c_master_write_byte(cmd, 0x2400 & 0xFF, true));
+            ESP_ERROR_CHECK(i2c_master_stop(cmd));
+            if(i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS) != ESP_OK){
+                tempi[readings+1] = -9999;
+                humidityi[readings+1] = -9999;
+                dewi[readings+1] = -9999;
+                xEventGroupSetBits(event_group, MEASURE_BIT);
+                ESP_LOGE(TAG, "Failed to initialize SHT35");
+                vTaskDelete(NULL);
+            };
+            i2c_cmd_link_delete(cmd);
 
-        vTaskDelay(30 / portTICK_PERIOD_MS); //wait 30ms for measurement
+            vTaskDelay(30 / portTICK_PERIOD_MS); //wait 30ms for measurement
 
-        uint8_t buffer[6];
+            uint8_t buffer[6];
 
-        cmd = i2c_cmd_link_create();
-        ESP_ERROR_CHECK(i2c_master_start(cmd));
-        ESP_ERROR_CHECK(i2c_master_write_byte(cmd, (0x44 << 1) | 1, true));
-        ESP_ERROR_CHECK(i2c_master_read(cmd, buffer, 6, I2C_MASTER_LAST_NACK));
-        ESP_ERROR_CHECK(i2c_master_stop(cmd));
-        ESP_ERROR_CHECK(i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS));
-        i2c_cmd_link_delete(cmd);
+            cmd = i2c_cmd_link_create();
+            ESP_ERROR_CHECK(i2c_master_start(cmd));
+            ESP_ERROR_CHECK(i2c_master_write_byte(cmd, (0x44 << 1) | 1, true));
+            ESP_ERROR_CHECK(i2c_master_read(cmd, buffer, 6, I2C_MASTER_LAST_NACK));
+            ESP_ERROR_CHECK(i2c_master_stop(cmd));
+            ESP_ERROR_CHECK(i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS));
+            i2c_cmd_link_delete(cmd);
 
-        uint16_t rawHumidity = (buffer[3] << 8) + buffer[4];
-        uint16_t rawTemperature = (buffer[0] << 8) + buffer[1];
+            uint16_t rawHumidity = (buffer[3] << 8) + buffer[4];
+            uint16_t rawTemperature = (buffer[0] << 8) + buffer[1];
 
-        tempi[readings+1] = rawTemperature * (175.0 / 65535) - 45; 
-        humidityi[readings+1] = rawHumidity * (100.0 / 65535);
-        dewi[readings+1] = 1.8 * 243.04*(log(humidityi[readings+1]/100)+((17.625*tempi[readings+1])/(243.04+tempi[readings+1])))/(17.625-log(humidityi[readings+1]/100)-((17.625*tempi[readings+1])/(243.04+tempi[readings+1]))) + 32;
-        tempi[readings+1] = 1.8 * tempi[readings+1] + 32;
+            tempi[readings+1] = rawTemperature * (175.0 / 65535) - 45; 
+            humidityi[readings+1] = rawHumidity * (100.0 / 65535);
+            dewi[readings+1] = 1.8 * 243.04*(log(humidityi[readings+1]/100)+((17.625*tempi[readings+1])/(243.04+tempi[readings+1])))/(17.625-log(humidityi[readings+1]/100)-((17.625*tempi[readings+1])/(243.04+tempi[readings+1]))) + 32;
+            tempi[readings+1] = 1.8 * tempi[readings+1] + 32;
 
-        #if AVERAGING
-            float tempSum = 0;
-            float humiditySum = 0;
-            float dewSum = 0;
+            #if AVERAGING
+                float tempSum = 0;
+                float humiditySum = 0;
+                float dewSum = 0;
 
-            uint8_t numberValid = 0;
+                uint8_t numberValid = 0;
 
-            for (uint8_t i = 1; i <= readings; i++){ 
-                tempi[i] = tempi[i+1]; //Reindex values
-                humidityi[i] = humidityi[i+1];
-                dewi[i] = dewi[i+1];
-                printf("Temp [%d]: %.1f\n", i, tempi[i]);
+                for (uint8_t i = 1; i <= readings; i++){ 
+                    tempi[i] = tempi[i+1]; //Reindex values
+                    humidityi[i] = humidityi[i+1];
+                    dewi[i] = dewi[i+1];
 
-                if (tempi[i] > -49){ //Only sum good values
-                    tempSum = tempSum + tempi[i];
-                    humiditySum = humiditySum + humidityi[i];
-                    dewSum = dewSum + dewi[i];
-                    numberValid++; //Count number of valid measurements
+                    if (tempi[i] > -49){ //Only sum good values
+                        tempSum = tempSum + tempi[i];
+                        humiditySum = humiditySum + humidityi[i];
+                        dewSum = dewSum + dewi[i];
+                        numberValid++; //Count number of valid measurements
+                    }
+                }
+
+                if (numberValid >= 240/MEASURE_INTERVAL_SEC){ //Calculate averages and extremes if there are at least 4 minutes of valid measurements
+                    temp = tempSum/numberValid;
+                    humidity = humiditySum/numberValid;
+                    dew = dewSum/numberValid;
+                }
+            #else
+                temp = tempi[readings+1];
+                humidity = humidityi[readings+1];
+                dew = dewi[readings+1];
+            #endif
+
+            if (temp > -9999){
+                if (temp > maxTemp){
+                    maxTemp = temp;
+                }
+                if (temp < minTemp){
+                    minTemp = temp;
+                }
+
+                if (dew > maxDew){
+                    maxDew = dew;
+                }
+                if (dew < minDew){
+                    minDew = dew;
+                }
+
+                if (humidity > maxHumidity){
+                    maxHumidity = humidity;
+                }
+                if (humidity < minHumidity){
+                    minHumidity = humidity;
                 }
             }
 
-            if (numberValid >= 240/MEASURE_INTERVAL_SEC){ //Calculate averages and extremes if there are at least 4 minutes of valid measurements
-                temp = tempSum/numberValid;
-                humidity = humiditySum/numberValid;
-                dew = dewSum/numberValid;
-            }
-        #else
-            temp = tempi[readings+1];
-            humidity = humidityi[readings+1];
-            dew = dewi[readings+1];
-        #endif
+            xEventGroupSetBits(event_group, MEASURE_BIT);
 
-        if (temp > -9999){
-            if (temp > maxTemp){
-                maxTemp = temp;
-            }
-            if (temp < minTemp){
-                 minTemp = temp;
-            }
+            ESP_LOGI(TAG, "Current Temp: %.1f", temp);
+            ESP_LOGI(TAG, "Current Dew Point: %.1f", dew);
+            ESP_LOGI(TAG, "Max Temp: %.1f, Min Temp: %.1f", maxTemp, minTemp);
 
-            if (dew > maxDew){
-                maxDew = dew;
-            }
-            if (dew < minDew){
-                minDew = dew;
-            }
-
-            if (humidity > maxHumidity){
-                maxHumidity = humidity;
-            }
-            if (humidity < minHumidity){
-                minHumidity = humidity;
-            }
+            vTaskDelay(1000 * MEASURE_INTERVAL_SEC / portTICK_PERIOD_MS);
         }
-
-        xEventGroupSetBits(event_group, MEASURE_BIT);
-
-        ESP_LOGI(TAG, "Current Temp: %.1f", temp);
-        ESP_LOGI(TAG, "Current Dew Point: %.1f", dew);
-        ESP_LOGI(TAG, "Max Temp: %.1f, Min Temp: %.1f", maxTemp, minTemp);
-
-        vTaskDelay(1000 * MEASURE_INTERVAL_SEC / portTICK_PERIOD_MS);
-    }
-}
+    }      
+#endif
 
 #if MEASURE_PRESSURE
     /**
@@ -974,7 +994,7 @@ void measureTemp(){
 
             if(wind_pulses){
                 uint32_t pulse_time_min = (ulp_pulse_min_wind & UINT16_MAX) * ulp_wakeup_period_us;
-                gust = (1000000/(float)(pulse_time_min)) * 60 * 60 * 4.5 * 3.14159 / (12*5280);
+                gust = (1000000/(float)(pulse_time_min)) * SCALE_FACTOR * 60 * 60 * 4.5 * 3.14159 / (12*5280);
             } else{
                 gust = 0;
             }
@@ -1031,7 +1051,7 @@ void measureTemp(){
             ESP_LOGI(TAG, "Max Wind Gust: %.1f", maxWindGust);
 
             if (numberValid >= 100/MEASURE_INTERVAL_SEC){ //Calculate averages and extremes if there are at least 100 seconds of valid measurements
-                windSpeed = ((float)windSum/((float)numberValid * MEASURE_INTERVAL_SEC)) * 60 * 60 * 4.5 * 3.14159 / (12*5280);
+                windSpeed = ((float)windSum/((float)numberValid * MEASURE_INTERVAL_SEC)) * SCALE_FACTOR * 60 * 60 * 4.5 * 3.14159 / (12*5280);
                 ESP_LOGI(TAG, "2-min Sustained Wind: %.1f", windSpeed);
                 if (windSpeed > maxWindSpeed){
                     maxWindSpeed = windSpeed;
@@ -1129,7 +1149,7 @@ int readADC(int gpio){
 }
 
 /**
- * @brief Format message for transmission via MQTT
+ * @brief Format message for transmission
  * 
  * @param msg_buf Time buffer
  * @param transmit_Current Whether to transmit current values
@@ -1141,19 +1161,19 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
     if (transmit_Current){
         if (temp > -9999){
             sprintf(data_buf, "%.1f", temp);
-            strncat(msg_buf, ",T:", 4);
+            strcat(msg_buf, ",T:");
             strncat(msg_buf, data_buf, strlen(data_buf));
         }
 
         if (dew > -9999){
             sprintf(data_buf, "%.1f", dew);
-            strncat(msg_buf, ",D:", 4);
+            strcat(msg_buf, ",D:");
             strncat(msg_buf, data_buf, strlen(data_buf));
         }
 
         if (humidity > -9999){
             sprintf(data_buf, "%.0f", humidity);
-            strncat(msg_buf, ",H:", 4);
+            strcat(msg_buf, ",H:");
             strncat(msg_buf, data_buf, strlen(data_buf));
         }  
 
@@ -1187,7 +1207,7 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
 
         if (vbat > 0){
             sprintf(data_buf, "%.2f", vbat);
-            strncat(msg_buf, ",Vbat:", 7);
+            strcat(msg_buf, ",V:");
             strncat(msg_buf, data_buf, strlen(data_buf));
         }
     }
@@ -1195,42 +1215,42 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
     if (transmit_MaxMin){
         if (maxTemp > -9999){
             sprintf(data_buf, "%.1f", maxTemp);
-            strncat(msg_buf, ",Tx:", 5);
+            strcat(msg_buf, ",Tx:");
             strncat(msg_buf, data_buf, strlen(data_buf));
             maxTemp = -9999;
         }
 
         if (minTemp < 9999){
             sprintf(data_buf, "%.1f", minTemp);
-            strncat(msg_buf, ",Tn:", 5);
+            strcat(msg_buf, ",Tn:");
             strncat(msg_buf, data_buf, strlen(data_buf));
             minTemp = 9999;
         }
 
         if (maxDew > -9999){
             sprintf(data_buf, "%.1f", maxDew);
-            strncat(msg_buf, ",Dx:", 5);
+            strcat(msg_buf, ",Dx:");
             strncat(msg_buf, data_buf, strlen(data_buf));
             maxDew = -9999;
         }
 
         if (minDew < 9999){
             sprintf(data_buf, "%.1f", minDew);
-            strncat(msg_buf, ",Dn:", 5);
+            strcat(msg_buf, ",Dn:");
             strncat(msg_buf, data_buf, strlen(data_buf));
             minDew = 9999;
         }
 
         if (maxHumidity > -9999){
             sprintf(data_buf, "%.0f", maxHumidity);
-            strncat(msg_buf, ",Hx:", 5);
+            strcat(msg_buf, ",Hx:");
             strncat(msg_buf, data_buf, strlen(data_buf));
             maxHumidity = -9999;
         }
 
         if (minHumidity < 9999){
             sprintf(data_buf, "%.0f", minHumidity);
-            strncat(msg_buf, ",Hn:", 5);
+            strcat(msg_buf, ",Hn:");
             strncat(msg_buf, data_buf, strlen(data_buf));
             minHumidity = 9999;
         }
@@ -1238,14 +1258,14 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
         #if MEASURE_WIND
             if (maxWindSpeed >= 0){
                 sprintf(data_buf, "%.1f", maxWindSpeed);
-                strncat(msg_buf, ",ux:", 5);
+                strcat(msg_buf, ",ux:");
                 strncat(msg_buf, data_buf, strlen(data_buf));
                 maxWindSpeed = -9999;
             }
 
             if (maxWindGust >= 0){
                 sprintf(data_buf, "%.1f", maxWindGust);
-                strncat(msg_buf, ",ugx:", 6);
+                strcat(msg_buf, ",ugx:");
                 strncat(msg_buf, data_buf, strlen(data_buf));
                 maxWindGust = -9999;
             }
@@ -1254,15 +1274,15 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
 
     if (rainGauge){
         sprintf(data_buf, "%.2f", precip);
-        strncat(msg_buf, ",R:", 4);
+        strcat(msg_buf, ",R:");
         strncat(msg_buf, data_buf, strlen(data_buf));
 
         sprintf(data_buf, "%.2f", precipRate);
-        strncat(msg_buf, ",rR:", 5);
+        strcat(msg_buf, ",rR:");
         strncat(msg_buf, data_buf, strlen(data_buf));
 
         sprintf(data_buf, "%.2f", maxPrecipRate);
-        strncat(msg_buf, ",rRx:", 6);
+        strcat(msg_buf, ",rRx:");
         strncat(msg_buf, data_buf, strlen(data_buf));
 
         maxPrecipRate = 0;
@@ -1284,20 +1304,22 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
      * @brief Power on modem
      * 
      */
-    void modem_power_on(){
-        printf("Power on\n");
-        gpio_set_direction(MODEM_PWRKEY_PIN, GPIO_MODE_OUTPUT);
-        gpio_set_level(MODEM_PWRKEY_PIN, 0);
-        vTaskDelay(100 / portTICK_PERIOD_MS);
-        gpio_set_level(MODEM_PWRKEY_PIN, 1);
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
-        gpio_set_level(MODEM_PWRKEY_PIN, 0);
+    #if MODEM != 0
+        void modem_power_on(){
+            printf("Power on\n");
+            gpio_set_direction(MODEM_PWRKEY_PIN, GPIO_MODE_OUTPUT);
+            gpio_set_level(MODEM_PWRKEY_PIN, 0);
+            vTaskDelay(100 / portTICK_PERIOD_MS);
+            gpio_set_level(MODEM_PWRKEY_PIN, 1);
+            vTaskDelay(1000 / portTICK_PERIOD_MS);
+            gpio_set_level(MODEM_PWRKEY_PIN, 0);
 
-        #if MODEM == 1
-            gpio_set_direction(FLIGHT_PIN, GPIO_MODE_OUTPUT);
-            gpio_set_level(FLIGHT_PIN, 1);
-        #endif
-    }
+            #if MODEM == 1
+                gpio_set_direction(FLIGHT_PIN, GPIO_MODE_OUTPUT);
+                gpio_set_level(FLIGHT_PIN, 1);
+            #endif
+        }
+    #endif
 
     /**
      * @brief Shut down modem
@@ -1324,6 +1346,7 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
 
     void modem_wake(){
         #if MODEM == 0
+            gpio_pulldown_dis(MODEM_DTR_PIN);
         #else
             gpio_set_direction(MODEM_DTR_PIN, GPIO_MODE_OUTPUT);
             gpio_hold_dis(MODEM_DTR_PIN);
@@ -1334,7 +1357,7 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
 
     void modem_sleep(){
         #if MODEM == 0
-            sendAT("$SL S=3600*54\n", "$SL OK*3b", 1); //Get modem ID
+            gpio_pulldown_en(MODEM_DTR_PIN);
         #else
             gpio_set_direction(MODEM_DTR_PIN, GPIO_MODE_OUTPUT);
             gpio_set_level(MODEM_DTR_PIN, 1);
@@ -1356,26 +1379,38 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
         uart_init(); //Initialize UART
         xTaskCreate(rx_task, "uart_rx_task", RX_BUF_SIZE * 2, NULL, configMAX_PRIORITIES - 1, NULL); //Start AT response receiver task
         #if MODEM == 0
-            callbackString = "$M138 BOOT,RUNNING*2a"; //Set modem ready signal
+            //callbackString = "$M138 BOOT,RUNNING*2a"; //Set modem ready signal
         #elif MODEM == 1
             callbackString = "PB DONE"; //Set modem ready signal
         #elif MODEM == 2  
             callbackString = "PSUTTZ"; //Set modem ready signal
         #endif
 
-        modem_power_on();
+        #if MODEM != 0
+            modem_power_on();
+        #endif
+
+        #if MODEM_SLEEP
+            modem_wake();
+        #endif
 
         xEventGroupWaitBits(event_group, PROCEED_BIT, pdTRUE, pdTRUE, 30000 / portTICK_PERIOD_MS); //Wait for ready signal
 
         #if MODEM != 0
             sendAT("AT+CGDCONT=1,\"IP\",\"hologram\",\"0.0.0.0\",0,0\r", "OK", 1); //Set APN
+            //sendAT("AT+CGDCONT=1,\"IP\",\"iot.ince.net\",\"0.0.0.0\",0,0\r", "OK", 1); //Set APN
             sendAT("AT+CGSN\r", "AT+CGSN", 1); //Get IMEI
+            //sendAT("AT+COPS=1,2,\"310410\"\r", "OK", 60); //AT&T
+            //sendAT("AT+COPS=1,2,\"310260\"\r", "OK", 60); //T-Mobile
+            while(!sendAT("AT+CREG?\r", "+CREG: 0,5", 1)){
+                vTaskDelay(5000 / portTICK_PERIOD_MS);
+            }
             //sendAT("AT+CGATT=1\r", "OK", 5); //Enable GPRS
         #else
-            sendAT("$CS*10\n", "$CS DI", 1); //Get modem ID
+            sendAT("AT\r", "OK", 1);
         #endif
 
-        #if MODEM_SLEEP
+        #if MODEM_SLEEP && MODEM != 0
             sendAT("AT+CSCLK=1\r", "OK", 1);
         #endif
 
@@ -1385,16 +1420,14 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
             sendAT("AT+CGATT=0\r", "OK", 5); //Disable GPRS
         #endif
 
-        #if MODEM == 0
-            sendAT("$DT @*70\n", "$DT 20", 1); //Get time
-        #else
-            sendAT("AT+CCLK?\r", "CCLK:", 1); //Get time
-        #endif
-
+        sendAT("AT+CCLK?\r", "CCLK:", 1); //Get time
+        sendAT("AT-MSSTM\r", "-MSSTM:", 1); //Get time
         #if MODEM_SLEEP
             modem_sleep();
         #else
-            modem_power_off(); //Shut down modem
+            #if MODEM != 0
+                modem_power_off(); //Shut down modem
+            #endif
         #endif
     }
 
@@ -1409,7 +1442,7 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
         uart_init(); //Initialize UART
         xTaskCreate(rx_task, "uart_rx_task", RX_BUF_SIZE * 2, NULL, configMAX_PRIORITIES - 1, NULL); //Start AT response receiver task
         #if MODEM == 0
-            callbackString = "$M138 BOOT,RUNNING*2a"; //Set modem ready signal
+            //callbackString = "$M138 BOOT,RUNNING*2a"; //Set modem ready signal
         #elif MODEM == 1
             callbackString = "PB DONE"; //Set modem ready signal
         #elif MODEM == 2  
@@ -1419,14 +1452,30 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
         #if MODEM_SLEEP
             modem_wake();
         #else
-            modem_power_on();
+            #if MODEM != 0
+                modem_power_on();
+            #endif
         #endif
 
-        xEventGroupWaitBits(event_group, PROCEED_BIT, pdTRUE, pdTRUE, 30000 / portTICK_PERIOD_MS); //Wait for ready signal
-
         #if MODEM != 0
-            while(!sendAT("AT+CREG?\r", "+CREG: 0,5", 1)){
+            EventBits_t modemReady;
+
+            modemReady = xEventGroupWaitBits(event_group, PROCEED_BIT, pdTRUE, pdTRUE, 30000 / portTICK_PERIOD_MS); //Wait for ready signal
+
+            /*if((modemReady & PROCEED_BIT) != 0){ //Received correct response
+                ESP_LOGI(TAG, "Modem ready");
+            } else{ //Command timeout
+                ESP_LOGE(TAG, "Modem not ready, switching operator"); //Modem chose some shitty operator that doesn't provide network time (US Cellular, those piles of shit etc..)
+                if(!sendAT("AT+COPS=1,2,\"310410\"\r", "OK", 60)){ //Try AT&T
+                    if(!sendAT("AT+COPS=1,2,\"310260\"\r", "OK", 60)){ //Try T-Mobile
+                        sendAT("AT+COPS=0\r", "OK", 60); //You're probably fucked, but look for something else if none of those work
+                    };
+                };
+            };*/
+            int i = 0;
+            while(!sendAT("AT+CREG?\r", "+CREG: 0,5", 1) && i < 5){
                 vTaskDelay(5000 / portTICK_PERIOD_MS);
+                i++;
             }
             #if PROTOCOL == 0
                 if(connectMQTT()){ //Connect to MQTT
@@ -1458,22 +1507,21 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
                     #endif
                 }
             #else
-                if(connectUDP()){ //Connect to MQTT
+                if(connectUDP()){ //Connect to UDP
+                    #if STORE_SD //Publish any queued messages first
+                        if(messageQueue > 0){
+                            if(mountSD()){
+                                readSD("/sdcard/data.txt");
+                                unmountSD();
+                            }
+                        }
+                    #endif
                     if(!publishUDP(msg_buf)){ //Publish message. If failed, write failed message to SD card and increment failed message counter.
                         #if STORE_SD
                             if(mountSD()){
                                 writeSD(msg_buf, "/sdcard/data.txt");
                                 unmountSD();
                                 messageQueue++;
-                            }
-                        #endif
-                    } else{ //If success, publish any queued messages.
-                        #if STORE_SD
-                            if(messageQueue > 0){
-                                if(mountSD()){
-                                    readSD("/sdcard/data.txt");
-                                    unmountSD();
-                                }
                             }
                         #endif
                     }
@@ -1487,6 +1535,16 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
                     #endif
                 }    
             #endif
+        #else
+            sendAT("AT+SBDWT\r", "READY", 5);
+            //sendAT("AT+CSQ\r", "+CSQ:", 10);
+            sendAT("hello\r", "OK", 5);
+            //sendAT(msg_buf, "OK", 5);
+            int i = 0;
+            while(!sendAT("AT+SBDIX\r", "+SBDIX: 0", 20) && i < 5){
+                vTaskDelay(10000 / portTICK_PERIOD_MS);
+                i++;
+            }
         #endif
 
         #if MODEM == 0
@@ -1495,16 +1553,14 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
             sendAT("AT+CGATT=0\r", "OK", 5); //Disable GPRS
         #endif
 
-        #if MODEM == 0
-            sendAT("$DT @*70\n", "$DT 20", 1); //Get time
-        #else
-            sendAT("AT+CCLK?\r", "CCLK:", 1); //Get time
-        #endif
+        sendAT("AT+CCLK?\r", "CCLK:", 1); //Get time
 
         #if MODEM_SLEEP
             modem_sleep();
         #else
-            modem_power_off(); //Shut down modem
+            #if MODEM != 0
+                modem_power_off(); //Shut down modem
+            #endif
         #endif
     }
 #endif
@@ -1516,8 +1572,9 @@ void app_main(void){
 
     i2c_master_init(); //Initialize I2C
 
-    xTaskCreate(measureTemp, "measureTemp", 1024*2, NULL, configMAX_PRIORITIES - 1, NULL); //Start temp measuring task
-    xEventGroupWaitBits(event_group, MEASURE_BIT, pdTRUE, pdTRUE, 500 / portTICK_PERIOD_MS); //Wait for at least one temp measurement
+    #if MEASURE_TEMP
+        xTaskCreate(measureTemp, "measureTemp", 1024*2, NULL, configMAX_PRIORITIES - 1, NULL); //Start temp measuring task
+    #endif
     //measurePressure();
 
     if (cause != ESP_SLEEP_WAKEUP_TIMER){ //Do the following on initial boot
@@ -1547,6 +1604,10 @@ void app_main(void){
         xEventGroupWaitBits(event_group, WIND_BIT, pdTRUE, pdTRUE, 500 / portTICK_PERIOD_MS); //Wait for at least one wind measurement
     #endif
 
+    #if MEASURE_TEMP
+        xEventGroupWaitBits(event_group, MEASURE_BIT, pdTRUE, pdTRUE, 500 / portTICK_PERIOD_MS); //Wait for at least one temp measurement
+    #endif
+
     time_t now;
     char time_buf[64];
     struct tm timeinfo;
@@ -1554,16 +1615,21 @@ void app_main(void){
     time(&now);
     localtime_r(&now, &timeinfo);
 
-    strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M", &timeinfo);
+    //strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M", &timeinfo);
+    strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", &timeinfo);
     ESP_LOGI(TAG, "The current date/time is: %s", time_buf);
 
     int currentHour = timeinfo.tm_hour;
     int currentMin = timeinfo.tm_min;
-    #if MODEM != 0
+    #if MODEM != 3
         int currentSec = timeinfo.tm_sec;
     #endif
 
+    #if MODEM != 3
     if (((currentMin % STORE_INTERVAL_MIN == 0) || (currentHour == 23 && currentMin == 59 && currentSec >= (59 - MEASURE_INTERVAL_SEC))) && currentMin != lastFormatMin){
+    #else
+    if (currentMin == 0 && currentHour != lastFormatHour){
+    #endif
         #if MEASURE_PRESSURE
             measurePressure(); //Measure pressure
         #endif
@@ -1583,8 +1649,12 @@ void app_main(void){
                 }
             #endif
         }
-        lastFormatMin = currentMin;
-        if (currentMin % STORE_INTERVAL_MIN != 0){
+        #if MODEM != 3
+            lastFormatMin = currentMin;
+        #else
+            lastFormatHour = currentHour;
+        #endif
+        if ((currentMin % STORE_INTERVAL_MIN != 0)){
             precip = 0;
         }
     }
