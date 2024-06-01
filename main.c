@@ -28,8 +28,8 @@
 #include <sys/stat.h>
 
 #define MEASURE_INTERVAL_SEC 10
-#define STORE_INTERVAL_MIN 2
-#define TRANSMIT_INTERVAL_MIN 2
+#define STORE_INTERVAL_MIN 15
+#define TRANSMIT_INTERVAL_MIN 15
 
 #define TRANSMIT_DATA true
 #define PROTOCOL 1 //0 = MQTT, 1 = UDP
@@ -70,14 +70,10 @@
 #define BAT_ADC_UNIT ADC_UNIT_1
 #define BAT_ADC ADC_CHANNEL_7
 
-#define MODEM 0 //MODEM 0 = satellite, MODEM 1 = SIM7600, MODEM 2 = SIM7070
-#define MODEM_SLEEP 1 //0 = Power off, 1 = Modem sleep
+#define MODEM 1 //MODEM 1 = SIM7600, MODEM 2 = SIM7070
+#define MODEM_SLEEP 0 //0 = Power off, 1 = Modem sleep
 
-#if MODEM == 0
-    #define TXD_PIN 17
-    #define RXD_PIN 16
-    #define MODEM_DTR_PIN GPIO_NUM_4
-#elif MODEM == 1 //SIM7600
+#if MODEM == 1 //SIM7600
     #define MODEM_PWRKEY_PIN GPIO_NUM_4
     #define TXD_PIN 27
     #define RXD_PIN 26
@@ -90,30 +86,21 @@
     #define MODEM_DTR_PIN GPIO_NUM_32
 #endif
 
-#if MODEM == 0
-    #define UART_NUM UART_NUM_2
-    #define UART_BAUD 19200
-#else
-    #define UART_NUM UART_NUM_1
-    #define UART_BAUD 115200
-#endif
-
+#define UART_NUM UART_NUM_1
+#define UART_BAUD 115200
 #define RX_BUF_SIZE 1024
 
 #define PROCEED_BIT BIT0
 #define MEASURE_BIT BIT1
 #define PRECIP_BIT BIT2
 #define WIND_BIT BIT3
+#define RESPONSE_BIT BIT4
 
 //ULP functions
 extern const uint8_t ulp_main_bin_start[] asm("_binary_ulp_main_bin_start");
 extern const uint8_t ulp_main_bin_end[]   asm("_binary_ulp_main_bin_end");
 
-#if MODEM == 3
-    RTC_DATA_ATTR int lastFormatHour = 24;
-#else
-    RTC_DATA_ATTR int lastFormatMin = -1;
-#endif
+RTC_DATA_ATTR int lastFormatMin = -1;
 
 char *msg_buf;
 int msg_len_bytes;
@@ -529,9 +516,9 @@ static esp_err_t i2c_master_init(void){
                 #endif
             }
             fclose(f);
-            deleteFileSD("/sdcard/data.txt");
+            deleteFileSD("/sdcard/queue.txt");
             if (messageQueue > 0){
-                rename("/sdcard/failed.txt", "/sdcard/data.txt");
+                rename("/sdcard/failed.txt", "/sdcard/queue.txt");
             }   
         }
     #endif
@@ -558,59 +545,30 @@ static esp_err_t i2c_master_init(void){
  */
 void setTime(char *s){
     //ESP_LOGE(TAG, "Time from modem: %s", s);
-    #if MODEM == 0 //+CCLK:24/05/24,21:44:45
-        char year[3];
-        strncpy(year, s + 5, 2); 
-        int yearint = atoi(year) + 100; //years since 1900
-        ESP_LOGI(TAG, "Year: %d", yearint);
+    //CCLK: "+CCLK: "23/06/10,14:09:19-16"
+    char year[3];
+    strncpy(year, s + 7, 2); 
+    int yearint = atoi(year) + 100; //years since 1900
 
-        char month[3];
-        strncpy(month, s + 8, 2);  
-        int monthint = atoi(month) - 1; //Jan = 0
-        ESP_LOGI(TAG, "Month: %d", monthint);
+    char month[3];
+    strncpy(month, s + 10, 2);  
+    int monthint = atoi(month) - 1; //Jan = 0
 
-        char day[3];
-        strncpy(day, s + 11, 3);  
-        int dayint = atoi(day);
-        ESP_LOGI(TAG, "Day: %d", dayint);
+    char day[3];
+    strncpy(day, s + 13, 3);  
+    int dayint = atoi(day);
 
-        char hour[3];
-        strncpy(hour, s + 14, 2);  
-        int hourint = atoi(hour);
-        ESP_LOGI(TAG, "Hour: %d", hourint);
+    char hour[3];
+    strncpy(hour, s + 16, 2);  
+    int hourint = atoi(hour);
 
-        char min[3];
-        strncpy(min, s + 17, 2);  
-        int minint = atoi(min);
+    char min[3];
+    strncpy(min, s + 19, 2);  
+    int minint = atoi(min);
 
-        char sec[3];
-        strncpy(sec, s + 20, 2);  
-        int secint = atoi(sec);
-    #else //CCLK: "+CCLK: "23/06/10,14:09:19-16"
-        char year[3];
-        strncpy(year, s + 7, 2); 
-        int yearint = atoi(year) + 100; //years since 1900
-
-        char month[3];
-        strncpy(month, s + 10, 2);  
-        int monthint = atoi(month) - 1; //Jan = 0
-
-        char day[3];
-        strncpy(day, s + 13, 3);  
-        int dayint = atoi(day);
-
-        char hour[3];
-        strncpy(hour, s + 16, 2);  
-        int hourint = atoi(hour);
-
-        char min[3];
-        strncpy(min, s + 19, 2);  
-        int minint = atoi(min);
-
-        char sec[3];
-        strncpy(sec, s + 22, 2);  
-        int secint = atoi(sec);
-    #endif
+    char sec[3];
+    strncpy(sec, s + 22, 2);  
+    int secint = atoi(sec);
 
     struct tm t = {0};
     t.tm_year = yearint;
@@ -649,17 +607,16 @@ void setTime(char *s){
                 while( token != NULL ){
                     i++;
                     ESP_LOGI("Modem", "%d %s", i, token);
-                    //printf("%d:%s\n", i, token); //printing each token
 
                     char *s;
                     s = strstr(token, callbackString);
                     if (s != NULL){
-                        if(strcmp(callbackString, "CCLK:") == 0){
-                            setTime(s);
-                        }
-                        if(strcmp(callbackString, "AT+CGSN") != 0 && strcmp(callbackString, "+CAURC: \"recv\"") != 0){
-                            xEventGroupSetBits(event_group, PROCEED_BIT);
-                        }
+                            if(strcmp(callbackString, "CCLK:") == 0){
+                                setTime(s);
+                            }
+                            if(strcmp(callbackString, "AT+CGSN") != 0 && strcmp(callbackString, "+CAURC: \"recv\"") != 0){
+                                xEventGroupSetBits(event_group, PROCEED_BIT);
+                            }
                     }
                     if(strcmp(callbackString, "AT+CGSN") == 0 && strlen(token) == 16){
                         strcpy(imei, token);
@@ -1102,7 +1059,7 @@ void getVbat(){
 
     adc_oneshot_chan_cfg_t config = {
         .bitwidth = ADC_BITWIDTH_DEFAULT,
-        .atten = ADC_ATTEN_DB_11,
+        .atten = ADC_ATTEN_DB_12,
     };
 
     int adc_raw[10];
@@ -1133,7 +1090,7 @@ int readADC(int gpio){
 
     adc_oneshot_chan_cfg_t config = {
         .bitwidth = ADC_BITWIDTH_DEFAULT,
-        .atten = ADC_ATTEN_DB_11,
+        .atten = ADC_ATTEN_DB_12,
     };
 
     int adc_raw;
@@ -1304,22 +1261,20 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
      * @brief Power on modem
      * 
      */
-    #if MODEM != 0
-        void modem_power_on(){
-            printf("Power on\n");
-            gpio_set_direction(MODEM_PWRKEY_PIN, GPIO_MODE_OUTPUT);
-            gpio_set_level(MODEM_PWRKEY_PIN, 0);
-            vTaskDelay(100 / portTICK_PERIOD_MS);
-            gpio_set_level(MODEM_PWRKEY_PIN, 1);
-            vTaskDelay(1000 / portTICK_PERIOD_MS);
-            gpio_set_level(MODEM_PWRKEY_PIN, 0);
+    void modem_power_on(){
+        printf("Power on\n");
+        gpio_set_direction(MODEM_PWRKEY_PIN, GPIO_MODE_OUTPUT);
+        gpio_set_level(MODEM_PWRKEY_PIN, 0);
+        vTaskDelay(100 / portTICK_PERIOD_MS);
+        gpio_set_level(MODEM_PWRKEY_PIN, 1);
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+        gpio_set_level(MODEM_PWRKEY_PIN, 0);
 
-            #if MODEM == 1
-                gpio_set_direction(FLIGHT_PIN, GPIO_MODE_OUTPUT);
-                gpio_set_level(FLIGHT_PIN, 1);
-            #endif
-        }
-    #endif
+        #if MODEM == 1
+            gpio_set_direction(FLIGHT_PIN, GPIO_MODE_OUTPUT);
+            gpio_set_level(FLIGHT_PIN, 1);
+        #endif
+    }
 
     /**
      * @brief Shut down modem
@@ -1345,26 +1300,18 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
     }
 
     void modem_wake(){
-        #if MODEM == 0
-            gpio_pulldown_dis(MODEM_DTR_PIN);
-        #else
-            gpio_set_direction(MODEM_DTR_PIN, GPIO_MODE_OUTPUT);
-            gpio_hold_dis(MODEM_DTR_PIN);
-            gpio_set_level(MODEM_DTR_PIN, 0);
-            //gpio_pullup_dis(MODEM_DTR_PIN);
-        #endif
+        gpio_set_direction(MODEM_DTR_PIN, GPIO_MODE_OUTPUT);
+        gpio_hold_dis(MODEM_DTR_PIN);
+         gpio_set_level(MODEM_DTR_PIN, 0);
+        //gpio_pullup_dis(MODEM_DTR_PIN);
     }
 
     void modem_sleep(){
-        #if MODEM == 0
-            gpio_pulldown_en(MODEM_DTR_PIN);
-        #else
-            gpio_set_direction(MODEM_DTR_PIN, GPIO_MODE_OUTPUT);
-            gpio_set_level(MODEM_DTR_PIN, 1);
-            gpio_hold_en(MODEM_DTR_PIN);
-            gpio_deep_sleep_hold_en();
-            //gpio_pullup_en(MODEM_DTR_PIN);
-        #endif
+        gpio_set_direction(MODEM_DTR_PIN, GPIO_MODE_OUTPUT);
+        gpio_set_level(MODEM_DTR_PIN, 1);
+        gpio_hold_en(MODEM_DTR_PIN);
+        gpio_deep_sleep_hold_en();
+        //gpio_pullup_en(MODEM_DTR_PIN);
     }
 
     /**
@@ -1378,56 +1325,42 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
 
         uart_init(); //Initialize UART
         xTaskCreate(rx_task, "uart_rx_task", RX_BUF_SIZE * 2, NULL, configMAX_PRIORITIES - 1, NULL); //Start AT response receiver task
-        #if MODEM == 0
-            //callbackString = "$M138 BOOT,RUNNING*2a"; //Set modem ready signal
-        #elif MODEM == 1
+        #if MODEM == 1
             callbackString = "PB DONE"; //Set modem ready signal
         #elif MODEM == 2  
             callbackString = "PSUTTZ"; //Set modem ready signal
         #endif
 
-        #if MODEM != 0
-            modem_power_on();
-        #endif
+        modem_power_on();
 
         #if MODEM_SLEEP
             modem_wake();
         #endif
-
+        
         xEventGroupWaitBits(event_group, PROCEED_BIT, pdTRUE, pdTRUE, 30000 / portTICK_PERIOD_MS); //Wait for ready signal
 
-        #if MODEM != 0
-            sendAT("AT+CGDCONT=1,\"IP\",\"hologram\",\"0.0.0.0\",0,0\r", "OK", 1); //Set APN
-            //sendAT("AT+CGDCONT=1,\"IP\",\"iot.ince.net\",\"0.0.0.0\",0,0\r", "OK", 1); //Set APN
-            sendAT("AT+CGSN\r", "AT+CGSN", 1); //Get IMEI
-            //sendAT("AT+COPS=1,2,\"310410\"\r", "OK", 60); //AT&T
-            //sendAT("AT+COPS=1,2,\"310260\"\r", "OK", 60); //T-Mobile
-            while(!sendAT("AT+CREG?\r", "+CREG: 0,5", 1)){
-                vTaskDelay(5000 / portTICK_PERIOD_MS);
-            }
-            //sendAT("AT+CGATT=1\r", "OK", 5); //Enable GPRS
-        #else
-            sendAT("AT\r", "OK", 1);
-        #endif
+        sendAT("AT+CGDCONT=1,\"IP\",\"hologram\",\"0.0.0.0\",0,0\r", "OK", 1); //Set APN
+         //sendAT("AT+CGDCONT=1,\"IP\",\"iot.ince.net\",\"0.0.0.0\",0,0\r", "OK", 1); //Set APN
+        sendAT("AT+CGSN\r", "AT+CGSN", 1); //Get IMEI
+        //sendAT("AT+COPS=1,2,\"310410\"\r", "OK", 60); //AT&T
+        //sendAT("AT+COPS=1,2,\"310260\"\r", "OK", 60); //T-Mobile
+        while(!sendAT("AT+CREG?\r", "+CREG: 0,5", 1)){
+            vTaskDelay(5000 / portTICK_PERIOD_MS);
+        }
+        //sendAT("AT+CGATT=1\r", "OK", 5); //Enable GPRS
 
-        #if MODEM_SLEEP && MODEM != 0
+        #if MODEM_SLEEP
             sendAT("AT+CSCLK=1\r", "OK", 1);
         #endif
 
-        #if MODEM == 0
-            
-        #else
-            sendAT("AT+CGATT=0\r", "OK", 5); //Disable GPRS
-        #endif
+        sendAT("AT+CGATT=0\r", "OK", 5); //Disable GPRS
 
         sendAT("AT+CCLK?\r", "CCLK:", 1); //Get time
-        sendAT("AT-MSSTM\r", "-MSSTM:", 1); //Get time
+
         #if MODEM_SLEEP
             modem_sleep();
         #else
-            #if MODEM != 0
-                modem_power_off(); //Shut down modem
-            #endif
+            modem_power_off(); //Shut down modem
         #endif
     }
 
@@ -1441,9 +1374,7 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
 
         uart_init(); //Initialize UART
         xTaskCreate(rx_task, "uart_rx_task", RX_BUF_SIZE * 2, NULL, configMAX_PRIORITIES - 1, NULL); //Start AT response receiver task
-        #if MODEM == 0
-            //callbackString = "$M138 BOOT,RUNNING*2a"; //Set modem ready signal
-        #elif MODEM == 1
+        #if MODEM == 1
             callbackString = "PB DONE"; //Set modem ready signal
         #elif MODEM == 2  
             callbackString = "PSUTTZ"; //Set modem ready signal
@@ -1452,37 +1383,22 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
         #if MODEM_SLEEP
             modem_wake();
         #else
-            #if MODEM != 0
-                modem_power_on();
-            #endif
+            modem_power_on();
         #endif
 
-        #if MODEM != 0
-            EventBits_t modemReady;
+        xEventGroupWaitBits(event_group, PROCEED_BIT, pdTRUE, pdTRUE, 30000 / portTICK_PERIOD_MS); //Wait for ready signal
 
-            modemReady = xEventGroupWaitBits(event_group, PROCEED_BIT, pdTRUE, pdTRUE, 30000 / portTICK_PERIOD_MS); //Wait for ready signal
-
-            /*if((modemReady & PROCEED_BIT) != 0){ //Received correct response
-                ESP_LOGI(TAG, "Modem ready");
-            } else{ //Command timeout
-                ESP_LOGE(TAG, "Modem not ready, switching operator"); //Modem chose some shitty operator that doesn't provide network time (US Cellular, those piles of shit etc..)
-                if(!sendAT("AT+COPS=1,2,\"310410\"\r", "OK", 60)){ //Try AT&T
-                    if(!sendAT("AT+COPS=1,2,\"310260\"\r", "OK", 60)){ //Try T-Mobile
-                        sendAT("AT+COPS=0\r", "OK", 60); //You're probably fucked, but look for something else if none of those work
-                    };
-                };
-            };*/
-            int i = 0;
-            while(!sendAT("AT+CREG?\r", "+CREG: 0,5", 1) && i < 5){
-                vTaskDelay(5000 / portTICK_PERIOD_MS);
-                i++;
-            }
+        int i = 0;
+        while(!sendAT("AT+CREG?\r", "+CREG: 0,5", 1) && i < 5){
+            vTaskDelay(5000 / portTICK_PERIOD_MS);
+            i++;
+        }
             #if PROTOCOL == 0
                 if(connectMQTT()){ //Connect to MQTT
                     if(!publishMQTT(msg_buf)){ //Publish message. If failed, write failed message to SD card and increment failed message counter.
                         #if STORE_SD
                             if(mountSD()){
-                                writeSD(msg_buf, "/sdcard/data.txt");
+                                writeSD(msg_buf, "/sdcard/queue.txt");
                                 unmountSD();
                                 messageQueue++;
                             }
@@ -1491,7 +1407,7 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
                         #if STORE_SD
                             if(messageQueue > 0){
                                 if(mountSD()){
-                                    readSD("/sdcard/data.txt");
+                                    readSD("/sdcard/queue.txt");
                                     unmountSD();
                                 }
                             }
@@ -1500,7 +1416,7 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
                 } else{ //If fail to connect, write failed message to SD card and increment queued message counter.
                     #if STORE_SD
                         if(mountSD()){
-                            writeSD(msg_buf, "/sdcard/data.txt");
+                            writeSD(msg_buf, "/sdcard/queue.txt");
                             unmountSD();
                             messageQueue++;
                         }
@@ -1511,7 +1427,7 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
                     #if STORE_SD //Publish any queued messages first
                         if(messageQueue > 0){
                             if(mountSD()){
-                                readSD("/sdcard/data.txt");
+                                readSD("/sdcard/queue.txt");
                                 unmountSD();
                             }
                         }
@@ -1519,7 +1435,7 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
                     if(!publishUDP(msg_buf)){ //Publish message. If failed, write failed message to SD card and increment failed message counter.
                         #if STORE_SD
                             if(mountSD()){
-                                writeSD(msg_buf, "/sdcard/data.txt");
+                                writeSD(msg_buf, "/sdcard/queue.txt");
                                 unmountSD();
                                 messageQueue++;
                             }
@@ -1528,39 +1444,21 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
                 } else{ //If fail to connect, write failed message to SD card and increment queued message counter.
                     #if STORE_SD
                         if(mountSD()){
-                            writeSD(msg_buf, "/sdcard/data.txt");
+                            writeSD(msg_buf, "/sdcard/queue.txt");
                             unmountSD();
                             messageQueue++;
                         }
                     #endif
                 }    
             #endif
-        #else
-            sendAT("AT+SBDWT\r", "READY", 5);
-            //sendAT("AT+CSQ\r", "+CSQ:", 10);
-            sendAT("hello\r", "OK", 5);
-            //sendAT(msg_buf, "OK", 5);
-            int i = 0;
-            while(!sendAT("AT+SBDIX\r", "+SBDIX: 0", 20) && i < 5){
-                vTaskDelay(10000 / portTICK_PERIOD_MS);
-                i++;
-            }
-        #endif
 
-        #if MODEM == 0
-            //do nothing
-        #else
-            sendAT("AT+CGATT=0\r", "OK", 5); //Disable GPRS
-        #endif
-
+        sendAT("AT+CGATT=0\r", "OK", 5); //Disable GPRS
         sendAT("AT+CCLK?\r", "CCLK:", 1); //Get time
 
         #if MODEM_SLEEP
             modem_sleep();
         #else
-            #if MODEM != 0
-                modem_power_off(); //Shut down modem
-            #endif
+            modem_power_off(); //Shut down modem
         #endif
     }
 #endif
@@ -1615,21 +1513,15 @@ void app_main(void){
     time(&now);
     localtime_r(&now, &timeinfo);
 
-    //strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M", &timeinfo);
-    strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", &timeinfo);
+    strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M", &timeinfo);
+    //strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", &timeinfo);
     ESP_LOGI(TAG, "The current date/time is: %s", time_buf);
 
     int currentHour = timeinfo.tm_hour;
     int currentMin = timeinfo.tm_min;
-    #if MODEM != 3
-        int currentSec = timeinfo.tm_sec;
-    #endif
+    int currentSec = timeinfo.tm_sec;
 
-    #if MODEM != 3
     if (((currentMin % STORE_INTERVAL_MIN == 0) || (currentHour == 23 && currentMin == 59 && currentSec >= (59 - MEASURE_INTERVAL_SEC))) && currentMin != lastFormatMin){
-    #else
-    if (currentMin == 0 && currentHour != lastFormatHour){
-    #endif
         #if MEASURE_PRESSURE
             measurePressure(); //Measure pressure
         #endif
@@ -1640,20 +1532,15 @@ void app_main(void){
             #if TRANSMIT_DATA
                 transmit_data(msg_buf);
             #endif
-        } else{
-            #if STORE_SD
-                if (mountSD()){
-                    writeSD(msg_buf, "/sdcard/data.txt");
-                    unmountSD();
-                    messageQueue++;
-                }
-            #endif
         }
-        #if MODEM != 3
-            lastFormatMin = currentMin;
-        #else
-            lastFormatHour = currentHour;
+        #if STORE_SD
+            if (mountSD()){
+                writeSD(msg_buf, "/sdcard/data.txt");
+                unmountSD();
+                messageQueue++;
+            }
         #endif
+        lastFormatMin = currentMin;
         if ((currentMin % STORE_INTERVAL_MIN != 0)){
             precip = 0;
         }
