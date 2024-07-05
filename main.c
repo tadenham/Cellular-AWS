@@ -50,7 +50,7 @@
 
 #define AVERAGING true
 #define MEASURE_TEMP true
-#define MEASURE_PRESSURE false
+#define MEASURE_PRESSURE true
 #define MEASURE_WIND false
 
 #if MEASURE_PRESSURE
@@ -66,11 +66,11 @@
 
 //Pin definitions
 #define RAIN_PIN GPIO_NUM_39
-#define WIND_PIN GPIO_NUM_12
+#define WIND_PIN GPIO_NUM_13
 #define BAT_ADC_UNIT ADC_UNIT_1
 #define BAT_ADC ADC_CHANNEL_7
 
-#define MODEM 1 //MODEM 1 = SIM7600, MODEM 2 = SIM7070
+#define MODEM 2 //MODEM 1 = SIM7600, MODEM 2 = SIM7070
 #define MODEM_SLEEP 0 //0 = Power off, 1 = Modem sleep
 
 #if MODEM == 1 //SIM7600
@@ -102,7 +102,7 @@ extern const uint8_t ulp_main_bin_end[]   asm("_binary_ulp_main_bin_end");
 
 RTC_DATA_ATTR int lastFormatMin = -1;
 
-char *msg_buf;
+char* msg_buf;
 int msg_len_bytes;
 
 #if STORE_SD
@@ -889,7 +889,6 @@ static void measureRain() {
             return;
         }
 
-        //bmx280_config_t bmx_cfg = BMX280_DEFAULT_CONFIG;
         bmx280_config_t bmx_cfg = {BMX280_TEMPERATURE_OVERSAMPLING_X1, BMX280_PRESSURE_OVERSAMPLING_X1, BMX280_DEFAULT_STANDBY, BMX280_IIR_NONE};
         ESP_ERROR_CHECK(bmx280_configure(bmx280, &bmx_cfg));
 
@@ -924,7 +923,7 @@ static void measureRain() {
             };
             i2c_cmd_link_delete(cmd);
 
-            vTaskDelay(10 / portTICK_PERIOD_MS); //wait 30ms for measurement
+            vTaskDelay(30 / portTICK_PERIOD_MS); //wait 30ms for measurement
 
             uint8_t buffer[2];
 
@@ -946,6 +945,8 @@ static void measureRain() {
             /* In case of an odd number of edges, keep one until next time */
             ulp_edge_count_wind = ulp_edge_count_wind % 2;
             windPulses[readings+1] = wind_pulses;
+
+            ESP_LOGI(TAG,"Pulses: %ld", wind_pulses);
             
             float gust;
 
@@ -992,7 +993,6 @@ static void measureRain() {
                         ud_normalized[i] = windDirectioni[i];
                     }
                 }
-                ESP_LOGI(TAG, "Raw Wind Direction [%d]: %.0f", i, windDirectioni[i]);
                 ESP_LOGI(TAG, "Normalized Wind Direction [%d]: %.0f", i, ud_normalized[i]);
 
                 if (windDirectioni[i] > -9999){ //Only sum good values
@@ -1038,6 +1038,8 @@ static void measureRain() {
             } else if (windDirection >= 338 || windDirection <= 22){
                 direction = "N";
             }
+
+            ESP_LOGI(TAG, "Raw Wind Direction: %.0f", (float)rawValue*360/2048);
 
             ESP_LOGI(TAG, "Wind Direction: %.0f° (%s)", windDirection, direction);
 
@@ -1247,7 +1249,7 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
 
     #if PROTOCOL == 1
         sprintf(data_buf, "%s", imei);
-        strncat(msg_buf,",",2);
+        strncat(msg_buf,",", 2);
         strncat(msg_buf, data_buf, 15);
     #endif
 
@@ -1263,12 +1265,14 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
      */
     void modem_power_on(){
         printf("Power on\n");
-        gpio_set_direction(MODEM_PWRKEY_PIN, GPIO_MODE_OUTPUT);
-        gpio_set_level(MODEM_PWRKEY_PIN, 0);
-        vTaskDelay(100 / portTICK_PERIOD_MS);
-        gpio_set_level(MODEM_PWRKEY_PIN, 1);
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
-        gpio_set_level(MODEM_PWRKEY_PIN, 0);
+        //gpio_set_direction(MODEM_PWRKEY_PIN, GPIO_MODE_OUTPUT);
+        //gpio_set_level(MODEM_PWRKEY_PIN, 0);
+        //TaskDelay(100 / portTICK_PERIOD_MS);
+        gpio_pullup_en(MODEM_PWRKEY_PIN);
+        //gpio_set_level(MODEM_PWRKEY_PIN, 1);
+        vTaskDelay(1500 / portTICK_PERIOD_MS);
+        gpio_pullup_dis(MODEM_PWRKEY_PIN);
+        //gpio_set_level(MODEM_PWRKEY_PIN, 0);
 
         #if MODEM == 1
             gpio_set_direction(FLIGHT_PIN, GPIO_MODE_OUTPUT);
@@ -1339,9 +1343,10 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
         
         xEventGroupWaitBits(event_group, PROCEED_BIT, pdTRUE, pdTRUE, 30000 / portTICK_PERIOD_MS); //Wait for ready signal
 
-        sendAT("AT+CGDCONT=1,\"IP\",\"hologram\",\"0.0.0.0\",0,0\r", "OK", 1); //Set APN
-         //sendAT("AT+CGDCONT=1,\"IP\",\"iot.ince.net\",\"0.0.0.0\",0,0\r", "OK", 1); //Set APN
+        //sendAT("AT+CGDCONT=1,\"IP\",\"hologram\",\"0.0.0.0\",0,0\r", "OK", 1); //Set APN
+        sendAT("AT+CGDCONT=1,\"IP\",\"iot.ince.net\",\"0.0.0.0\",0,0\r", "OK", 1); //Set APN
         sendAT("AT+CGSN\r", "AT+CGSN", 1); //Get IMEI
+
         //sendAT("AT+COPS=1,2,\"310410\"\r", "OK", 60); //AT&T
         //sendAT("AT+COPS=1,2,\"310260\"\r", "OK", 60); //T-Mobile
         while(!sendAT("AT+CREG?\r", "+CREG: 0,5", 1)){
@@ -1507,7 +1512,7 @@ void app_main(void){
     #endif
 
     time_t now;
-    char time_buf[64];
+    char time_buf[256]; //Don't change this or format buffer will overflow
     struct tm timeinfo;
 
     time(&now);
@@ -1532,12 +1537,19 @@ void app_main(void){
             #if TRANSMIT_DATA
                 transmit_data(msg_buf);
             #endif
+        } else {
+            #if STORE_SD
+                if (mountSD()){
+                    writeSD(msg_buf, "/sdcard/queue.txt");
+                    unmountSD();
+                    messageQueue++;
+                }
+            #endif    
         }
         #if STORE_SD
             if (mountSD()){
                 writeSD(msg_buf, "/sdcard/data.txt");
                 unmountSD();
-                messageQueue++;
             }
         #endif
         lastFormatMin = currentMin;
