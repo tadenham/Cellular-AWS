@@ -28,11 +28,11 @@
 #include <sys/stat.h>
 
 #define MEASURE_INTERVAL_SEC 10
-#define STORE_INTERVAL_MIN 15
-#define TRANSMIT_INTERVAL_MIN 15
+#define STORE_INTERVAL_MIN 5
+#define TRANSMIT_INTERVAL_MIN 5
 
 #define TRANSMIT_DATA true
-#define PROTOCOL 1 //0 = MQTT, 1 = UDP
+#define APN 1 //0 = Hologram, 1 = 1NCE
 #define STORE_SD true
 
 #if TRANSMIT_DATA
@@ -50,7 +50,7 @@
 
 #define AVERAGING true
 #define MEASURE_TEMP true
-#define MEASURE_PRESSURE true
+#define MEASURE_PRESSURE false
 #define MEASURE_WIND false
 
 #if MEASURE_PRESSURE
@@ -60,17 +60,17 @@
 //I2C definitions
 #define I2C_MASTER_NUM 0
 #define I2C_MASTER_TIMEOUT_MS 1000
-#define I2C_CLK_SPEED 100000 //100 kHz
+#define I2C_CLK_SPEED 50000 //100 kHz
 #define SDA_PIN 21
 #define SCL_PIN 22
 
 //Pin definitions
 #define RAIN_PIN GPIO_NUM_39
-#define WIND_PIN GPIO_NUM_13
+#define WIND_PIN GPIO_NUM_12
 #define BAT_ADC_UNIT ADC_UNIT_1
 #define BAT_ADC ADC_CHANNEL_7
 
-#define MODEM 2 //MODEM 1 = SIM7600, MODEM 2 = SIM7070
+#define MODEM 1 //MODEM 1 = SIM7600, MODEM 2 = SIM7070
 #define MODEM_SLEEP 0 //0 = Power off, 1 = Modem sleep
 
 #if MODEM == 1 //SIM7600
@@ -215,103 +215,6 @@ static esp_err_t i2c_master_init(void){
         };
     }
 
-    /**
-    * @brief Connects to MQTT broker
-    * 
-    */
-    bool connectMQTT(){
-        #if MODEM != 2
-            char client[64] = "AT+CMQTTACCQ=0,\"";
-            strncat(client, imei, strlen(imei));
-            strncpy(client + 31, "\"", 2);
-            strncat(client, "\r", 2);
-            printf("Client: %s\n", client);
-
-            sendAT("AT+CMQTTSTART\r", "+CMQTTSTART: 0", 5);
-            sendAT(client, "OK", 5);
-            if(sendAT("AT+CMQTTCONNECT=0,\"tcp://142.11.236.169:1883\",60,0\r", "+CMQTTCONNECT: 0,0", 60)){
-                ESP_LOGI(TAG, "MQTT connect successful");
-                return true;
-            } else{
-                ESP_LOGE(TAG, "MQTT connect fail");
-                return false;
-            }
-        #else
-            sendAT("AT+CNACT=1,1\r", "OK", 5);
-
-            char client[64] = "AT+SMCONF=\"CLIENTID\",\"";
-            strncat(client, imei, strlen(imei));
-            printf("Str len: %d\n", strlen(client));
-            strncpy(client + 37, "\"", 2); //need to calc
-            strncat(client, "\r", 2);
-            printf("Client: %s\n", client);
-
-            sendAT("AT+SMCONF=\"URL\",\"142.11.236.169\",\"1883\"\r", "OK", 5);
-            sendAT(client, "OK", 5);
-            if(sendAT("AT+SMCONN\r", "OK", 20)){
-                ESP_LOGI(TAG, "MQTT connect successful");
-                return true;
-            } else{
-                ESP_LOGE(TAG, "MQTT connect fail");
-                return false;
-            }
-        #endif
-    }   
-
-    /**
-    * @brief Publishes MQTT message. connectMQTT must have already been called.
-    * 
-    * @param msg_buf Message buffer
-    */
-    bool publishMQTT(char *msg_buf){
-        #if MODEM != 2
-            char topic[21] = "data/";
-            strncat(topic, imei, strlen(imei));
-
-            char pub_buf[32] =  "AT+CMQTTPAYLOAD=0,";
-            char msg_len[32];
-            sprintf(msg_len, "%d", strlen(msg_buf));
-            strncat(pub_buf, msg_len, strlen(msg_len));
-            strncat(pub_buf, "\r", 2);
-            printf("Pub buf: %s\n", pub_buf);
-
-            sendAT("AT+CMQTTTOPIC=0,20\r", ">", 5);
-            sendAT(topic, "OK", 5);
-            sendAT(pub_buf, ">", 5);
-            sendAT(msg_buf, "OK", 5);
-            if(sendAT("AT+CMQTTPUB=0,1,60,1\r", "+CMQTTPUB: 0,0", 15)){
-                ESP_LOGI(TAG, "MQTT publish successful");
-                return true;
-            } else{
-                ESP_LOGE(TAG, "MQTT publish fail");
-                return false;
-            }
-        #else
-            char topic[21] = "data/";
-            strncat(topic, imei, strlen(imei));
-
-            char pub_buf[64] =  "AT+SMPUB=\"";
-            strncat(pub_buf, topic, strlen(topic));
-            strncpy(pub_buf + 30, "\"", 2);
-            strncat(pub_buf, ",", 2);
-
-            char msg_len[32];
-            sprintf(msg_len, "%d", strlen(msg_buf));
-            strncat(pub_buf, msg_len, strlen(msg_len));
-            strncat(pub_buf, ",1,1\r", 6);
-
-            printf("Msg buf: %s\n", msg_buf);
-            sendAT(pub_buf, ">", 5);
-            if(sendAT(msg_buf, "OK", 5)){
-                ESP_LOGI(TAG, "MQTT publish successful");
-                return true;
-            } else{
-                ESP_LOGE(TAG, "MQTT publish fail");
-                return false;
-            }
-        #endif
-    }
-
     bool connectUDP(){
         #if MODEM == 1
             sendAT("AT+NETOPEN\r", "OK", 5);
@@ -324,8 +227,8 @@ static esp_err_t i2c_master_init(void){
                 return false;
             }
         #else
-            if(sendAT("AT+CNACT=0,1\r", "+APP PDP: 0,ACTIVE", 10)){
-                if(sendAT("AT+CAOPEN=1,0,\"UDP\",\"142.11.236.169\",5254,1\r", "+CAOPEN: 1,0", 5)){
+            if(sendAT("AT+CNACT=0,1\r", "+APP PDP: 0,ACTIVE", 20)){
+                if(sendAT("AT+CAOPEN=1,0,\"UDP\",\"142.11.236.169\",5254,1\r", "+CAOPEN: 1,0", 10)){
                     ESP_LOGI(TAG, "UDP connnect successful");
                 return true;
                 } else{
@@ -501,19 +404,11 @@ static esp_err_t i2c_master_init(void){
                     *pos = '\0';
                 }
                 ESP_LOGI(TAG, "Read from file: '%s'", line);
-                #if PROTOCOL == 0
-                    if(publishMQTT(line)){
-                        messageQueue--;
-                    } else{
-                        writeSD(line, "/sdcard/failed.txt");
-                    }
-                #else
-                    if(publishUDP(line)){
-                        messageQueue--;
-                    } else{
-                        writeSD(line, "/sdcard/failed.txt");
-                    }
-                #endif
+                if(publishUDP(line)){
+                    messageQueue--;
+                } else{
+                    writeSD(line, "/sdcard/failed.txt");
+                }
             }
             fclose(f);
             deleteFileSD("/sdcard/queue.txt");
@@ -782,7 +677,7 @@ static void measureRain() {
             };
             i2c_cmd_link_delete(cmd);
 
-            vTaskDelay(30 / portTICK_PERIOD_MS); //wait 30ms for measurement
+            vTaskDelay(60 / portTICK_PERIOD_MS); //wait 30ms for measurement
 
             uint8_t buffer[6];
 
@@ -822,7 +717,7 @@ static void measureRain() {
                     }
                 }
 
-                if (numberValid >= 240/MEASURE_INTERVAL_SEC){ //Calculate averages and extremes if there are at least 4 minutes of valid measurements
+                if (numberValid >= 120/MEASURE_INTERVAL_SEC){ //Calculate averages and extremes if there are at least 2 minutes of valid measurements
                     temp = tempSum/numberValid;
                     humidity = humiditySum/numberValid;
                     dew = dewSum/numberValid;
@@ -1168,6 +1063,8 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
             sprintf(data_buf, "%.2f", vbat);
             strcat(msg_buf, ",V:");
             strncat(msg_buf, data_buf, strlen(data_buf));
+        } else {
+            strcat(msg_buf, ",V:0");
         }
     }
 
@@ -1247,11 +1144,9 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
         maxPrecipRate = 0;
     }
 
-    #if PROTOCOL == 1
-        sprintf(data_buf, "%s", imei);
-        strncat(msg_buf,",", 2);
-        strncat(msg_buf, data_buf, 15);
-    #endif
+    sprintf(data_buf, "%s", imei);
+    strncat(msg_buf,",", 2);
+    strncat(msg_buf, data_buf, 15);
 
     ESP_LOGI(TAG, "Msg buf: %s", msg_buf);
     printf("Length of msg buff: %d\n", strlen(msg_buf));
@@ -1274,7 +1169,7 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
         gpio_pullup_dis(MODEM_PWRKEY_PIN);
         //gpio_set_level(MODEM_PWRKEY_PIN, 0);
 
-        #if MODEM == 1
+        #if MODEM == 1 //SIM7600
             gpio_set_direction(FLIGHT_PIN, GPIO_MODE_OUTPUT);
             gpio_set_level(FLIGHT_PIN, 1);
         #endif
@@ -1343,8 +1238,13 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
         
         xEventGroupWaitBits(event_group, PROCEED_BIT, pdTRUE, pdTRUE, 30000 / portTICK_PERIOD_MS); //Wait for ready signal
 
-        //sendAT("AT+CGDCONT=1,\"IP\",\"hologram\",\"0.0.0.0\",0,0\r", "OK", 1); //Set APN
-        sendAT("AT+CGDCONT=1,\"IP\",\"iot.ince.net\",\"0.0.0.0\",0,0\r", "OK", 1); //Set APN
+        #if APN == 0
+            sendAT("AT+CGDCONT=1,\"IP\",\"hologram\",\"0.0.0.0\",0,0\r", "OK", 1); //Set APN
+        #else
+            sendAT("AT+CGDCONT=1,\"IP\",\"iot.ince.net\",\"0.0.0.0\",0,0\r", "OK", 1); //Set APN
+        #endif
+
+        sendAT("AT+CNMP=38\r", "OK", 60); //Get IMEI
         sendAT("AT+CGSN\r", "AT+CGSN", 1); //Get IMEI
 
         //sendAT("AT+COPS=1,2,\"310410\"\r", "OK", 60); //AT&T
@@ -1369,12 +1269,31 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
         #endif
     }
 
+    void modem_reset(){
+        xEventGroupClearBits(event_group, PROCEED_BIT); //Clear AT response signal
+
+        #if MODEM == 1
+            callbackString = "PB DONE"; //Set modem ready signal
+        #elif MODEM == 2  
+            callbackString = "PSUTTZ"; //Set modem ready signal
+        #endif
+
+        printf("Resetting modem\n");
+        gpio_pullup_en(MODEM_PWRKEY_PIN);
+        vTaskDelay(15000 / portTICK_PERIOD_MS);
+        gpio_pullup_dis(MODEM_PWRKEY_PIN);
+
+        xEventGroupWaitBits(event_group, PROCEED_BIT, pdTRUE, pdTRUE, 30000 / portTICK_PERIOD_MS); //Wait for ready signal
+    }
+
     /**
      * @brief Start modem and transmit message via MQTT
      * 
      * @param msg_buf Message buffer
      */
-    void transmit_data(char *msg_buf){
+    bool transmit_data(char *msg_buf){
+        bool transmit_success = false;
+
         xEventGroupClearBits(event_group, PROCEED_BIT); //Clear AT response signal
 
         uart_init(); //Initialize UART
@@ -1393,69 +1312,28 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
 
         xEventGroupWaitBits(event_group, PROCEED_BIT, pdTRUE, pdTRUE, 30000 / portTICK_PERIOD_MS); //Wait for ready signal
 
+        if(!sendAT("AT\r", "OK", 1)){
+            modem_reset();
+        }
+
         int i = 0;
         while(!sendAT("AT+CREG?\r", "+CREG: 0,5", 1) && i < 5){
             vTaskDelay(5000 / portTICK_PERIOD_MS);
             i++;
         }
-            #if PROTOCOL == 0
-                if(connectMQTT()){ //Connect to MQTT
-                    if(!publishMQTT(msg_buf)){ //Publish message. If failed, write failed message to SD card and increment failed message counter.
-                        #if STORE_SD
-                            if(mountSD()){
-                                writeSD(msg_buf, "/sdcard/queue.txt");
-                                unmountSD();
-                                messageQueue++;
-                            }
-                        #endif
-                    } else{ //If success, publish any queued messages.
-                        #if STORE_SD
-                            if(messageQueue > 0){
-                                if(mountSD()){
-                                    readSD("/sdcard/queue.txt");
-                                    unmountSD();
-                                }
-                            }
-                        #endif
+        if(connectUDP()){ //Connect to UDP
+            #if STORE_SD //Publish any queued messages first
+                if(messageQueue > 0){
+                    if(mountSD()){
+                        readSD("/sdcard/queue.txt");
+                        unmountSD();
                     }
-                } else{ //If fail to connect, write failed message to SD card and increment queued message counter.
-                    #if STORE_SD
-                        if(mountSD()){
-                            writeSD(msg_buf, "/sdcard/queue.txt");
-                            unmountSD();
-                            messageQueue++;
-                        }
-                    #endif
                 }
-            #else
-                if(connectUDP()){ //Connect to UDP
-                    #if STORE_SD //Publish any queued messages first
-                        if(messageQueue > 0){
-                            if(mountSD()){
-                                readSD("/sdcard/queue.txt");
-                                unmountSD();
-                            }
-                        }
-                    #endif
-                    if(!publishUDP(msg_buf)){ //Publish message. If failed, write failed message to SD card and increment failed message counter.
-                        #if STORE_SD
-                            if(mountSD()){
-                                writeSD(msg_buf, "/sdcard/queue.txt");
-                                unmountSD();
-                                messageQueue++;
-                            }
-                        #endif
-                    }
-                } else{ //If fail to connect, write failed message to SD card and increment queued message counter.
-                    #if STORE_SD
-                        if(mountSD()){
-                            writeSD(msg_buf, "/sdcard/queue.txt");
-                            unmountSD();
-                            messageQueue++;
-                        }
-                    #endif
-                }    
             #endif
+            if(publishUDP(msg_buf)){ //Publish message. If failed, write failed message to SD card and increment failed message counter.
+                transmit_success = true;
+            }
+        }
 
         sendAT("AT+CGATT=0\r", "OK", 5); //Disable GPRS
         sendAT("AT+CCLK?\r", "CCLK:", 1); //Get time
@@ -1465,6 +1343,12 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
         #else
             modem_power_off(); //Shut down modem
         #endif
+
+        if (transmit_success){
+            return true;
+        } else {
+            return false;
+        }
     }
 #endif
 
@@ -1535,7 +1419,15 @@ void app_main(void){
 
         if (currentMin % TRANSMIT_INTERVAL_MIN == 0){
             #if TRANSMIT_DATA
-                transmit_data(msg_buf);
+                if (!transmit_data(msg_buf)){
+                    #if STORE_SD
+                        if (mountSD()){
+                            writeSD(msg_buf, "/sdcard/queue.txt");
+                            unmountSD();
+                            messageQueue++;
+                        }
+                    #endif  
+                }
             #endif
         } else {
             #if STORE_SD
