@@ -32,7 +32,6 @@
 #define TRANSMIT_INTERVAL_MIN 5
 
 #define TRANSMIT_DATA true
-#define APN 1 //0 = Hologram, 1 = 1NCE
 #define STORE_SD true
 
 #if TRANSMIT_DATA
@@ -50,7 +49,7 @@
 
 #define AVERAGING true
 #define MEASURE_TEMP true
-#define MEASURE_PRESSURE false
+#define MEASURE_PRESSURE true
 #define MEASURE_WIND false
 
 #if MEASURE_PRESSURE
@@ -66,11 +65,11 @@
 
 //Pin definitions
 #define RAIN_PIN GPIO_NUM_39
-#define WIND_PIN GPIO_NUM_12
+#define WIND_PIN GPIO_NUM_36
 #define BAT_ADC_UNIT ADC_UNIT_1
 #define BAT_ADC ADC_CHANNEL_7
 
-#define MODEM 1 //MODEM 1 = SIM7600, MODEM 2 = SIM7070
+#define MODEM 2 //MODEM 1 = SIM7600, MODEM 2 = SIM7070
 #define MODEM_SLEEP 0 //0 = Power off, 1 = Modem sleep
 
 #if MODEM == 1 //SIM7600
@@ -95,6 +94,7 @@
 #define PRECIP_BIT BIT2
 #define WIND_BIT BIT3
 #define RESPONSE_BIT BIT4
+#define I2C_READY_BIT BIT7
 
 //ULP functions
 extern const uint8_t ulp_main_bin_start[] asm("_binary_ulp_main_bin_start");
@@ -147,7 +147,7 @@ RTC_DATA_ATTR uint32_t boot_count;
 #endif
 
 #if MEASURE_WIND
-    #define SCALE_FACTOR 3
+    #define SCALE_FACTOR 2.5
     float windSpeed = -9999; //2-minute average sustained wind
     RTC_DATA_ATTR int32_t windPulses[] = {-9999, -9999, -9999, -9999, -9999, -9999, -9999, -9999, -9999, -9999, -9999, -9999, -9999, -9999}; //2 minutes of instantaneous values
     RTC_DATA_ATTR float maxWindSpeed = -9999; //max 2-minute average since last transmission
@@ -661,6 +661,8 @@ static void measureRain() {
             i++;
             printf("%d: Measuring temp\n", i);
 
+            xEventGroupWaitBits(event_group, I2C_READY_BIT, pdTRUE, pdTRUE, 500 / portTICK_PERIOD_MS);
+
             cmd = i2c_cmd_link_create();
             ESP_ERROR_CHECK(i2c_master_start(cmd));
             ESP_ERROR_CHECK(i2c_master_write_byte(cmd, (0x44 << 1) | 0, true));
@@ -673,6 +675,7 @@ static void measureRain() {
                 dewi[readings+1] = -9999;
                 xEventGroupSetBits(event_group, MEASURE_BIT);
                 ESP_LOGE(TAG, "Failed to initialize SHT35");
+                xEventGroupSetBits(event_group, I2C_READY_BIT);
                 vTaskDelete(NULL);
             };
             i2c_cmd_link_delete(cmd);
@@ -688,6 +691,8 @@ static void measureRain() {
             ESP_ERROR_CHECK(i2c_master_stop(cmd));
             ESP_ERROR_CHECK(i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS));
             i2c_cmd_link_delete(cmd);
+
+            xEventGroupSetBits(event_group, I2C_READY_BIT);
 
             uint16_t rawHumidity = (buffer[3] << 8) + buffer[4];
             uint16_t rawTemperature = (buffer[0] << 8) + buffer[1];
@@ -805,6 +810,8 @@ static void measureRain() {
     static void measureWind(){
         uint8_t readings = 120 / MEASURE_INTERVAL_SEC;
         while(1){
+            xEventGroupWaitBits(event_group, I2C_READY_BIT, pdTRUE, pdTRUE, 500 / portTICK_PERIOD_MS);
+
             cmd = i2c_cmd_link_create();
             ESP_ERROR_CHECK(i2c_master_start(cmd));
             ESP_ERROR_CHECK(i2c_master_write_byte(cmd, (0x48 << 1) | 0, true));
@@ -814,6 +821,7 @@ static void measureRain() {
                 windDirectioni[readings+1] = -9999;
                 xEventGroupSetBits(event_group, WIND_BIT);
                 ESP_LOGE(TAG, "Failed to initialize wind direction sensor");
+                xEventGroupSetBits(event_group, I2C_READY_BIT);
                 vTaskDelete(NULL);
             };
             i2c_cmd_link_delete(cmd);
@@ -829,6 +837,8 @@ static void measureRain() {
             ESP_ERROR_CHECK(i2c_master_stop(cmd));
             ESP_ERROR_CHECK(i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS));
             i2c_cmd_link_delete(cmd);
+
+            xEventGroupSetBits(event_group, I2C_READY_BIT);
 
             int16_t rawValue = (buffer[0] << 8) + buffer[1];
 
@@ -848,6 +858,9 @@ static void measureRain() {
             if(wind_pulses){
                 uint32_t pulse_time_min = (ulp_pulse_min_wind & UINT16_MAX) * ulp_wakeup_period_us;
                 gust = (1000000/(float)(pulse_time_min)) * SCALE_FACTOR * 60 * 60 * 4.5 * 3.14159 / (12*5280);
+
+            float RPM = 60*(1000000/(float)(pulse_time_min));
+            ESP_LOGI(TAG, "Max RPM : %.0f", RPM);
             } else{
                 gust = 0;
             }
@@ -855,8 +868,6 @@ static void measureRain() {
                 maxWindGust = gust;
             }
             //ESP_LOGI(TAG, "Wind Gust : %.1f%s", gust," mph");
-            //float RPM = 60*(1000000/(float)(pulse_time_min));
-            //ESP_LOGI(TAG, "Max RPM : %.0f", RPM);
             ulp_pulse_min_wind = 0;
 
             windGusti[readings+1] = gust;
@@ -1201,7 +1212,7 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
     void modem_wake(){
         gpio_set_direction(MODEM_DTR_PIN, GPIO_MODE_OUTPUT);
         gpio_hold_dis(MODEM_DTR_PIN);
-         gpio_set_level(MODEM_DTR_PIN, 0);
+        gpio_set_level(MODEM_DTR_PIN, 0);
         //gpio_pullup_dis(MODEM_DTR_PIN);
     }
 
@@ -1238,13 +1249,10 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
         
         xEventGroupWaitBits(event_group, PROCEED_BIT, pdTRUE, pdTRUE, 30000 / portTICK_PERIOD_MS); //Wait for ready signal
 
-        #if APN == 0
-            sendAT("AT+CGDCONT=1,\"IP\",\"hologram\",\"0.0.0.0\",0,0\r", "OK", 1); //Set APN
-        #else
-            sendAT("AT+CGDCONT=1,\"IP\",\"iot.ince.net\",\"0.0.0.0\",0,0\r", "OK", 1); //Set APN
-        #endif
+        sendAT("AT+CGDCONT=1,\"IP\",\"hologram\",\"0.0.0.0\",0,0\r", "OK", 1); //Set APN
+        sendAT("AT+CGDCONT=2,\"IP\",\"iot.ince.net\",\"0.0.0.0\",0,0\r", "OK", 1); //Set APN
 
-        sendAT("AT+CNMP=38\r", "OK", 60); //Get IMEI
+        sendAT("AT+CNMP=38\r", "OK", 1);
         sendAT("AT+CGSN\r", "AT+CGSN", 1); //Get IMEI
 
         //sendAT("AT+COPS=1,2,\"310410\"\r", "OK", 60); //AT&T
@@ -1279,6 +1287,7 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
         #endif
 
         printf("Resetting modem\n");
+        gpio_reset_pin(MODEM_PWRKEY_PIN);
         gpio_pullup_en(MODEM_PWRKEY_PIN);
         vTaskDelay(15000 / portTICK_PERIOD_MS);
         gpio_pullup_dis(MODEM_PWRKEY_PIN);
@@ -1314,6 +1323,16 @@ char* format_data(char *msg_buf, bool transmit_Current, bool transmit_MaxMin){
 
         if(!sendAT("AT\r", "OK", 1)){
             modem_reset();
+            if(!sendAT("AT\r", "OK", 1)){
+                #if STORE_SD
+                    if (mountSD()){
+                        writeSD(msg_buf, "/sdcard/queue.txt");
+                        unmountSD();
+                        messageQueue++;
+                    }
+                #endif
+                esp_restart();
+            }
         }
 
         int i = 0;
@@ -1359,6 +1378,8 @@ void app_main(void){
 
     i2c_master_init(); //Initialize I2C
 
+    xEventGroupSetBits(event_group, I2C_READY_BIT);
+
     #if MEASURE_TEMP
         xTaskCreate(measureTemp, "measureTemp", 1024*2, NULL, configMAX_PRIORITIES - 1, NULL); //Start temp measuring task
     #endif
@@ -1372,6 +1393,7 @@ void app_main(void){
             init_ulp_program();
         } else{
             #if MEASURE_WIND
+                gpio_reset_pin(WIND_PIN);
                 init_ulp_program();
             #endif
         } 
